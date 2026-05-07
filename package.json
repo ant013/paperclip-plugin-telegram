@@ -1,6 +1,6 @@
 {
   "name": "paperclip-plugin-telegram",
-  "version": "0.6.1",
+  "version": "0.6.1-gimle.0",
   "type": "module",
   "main": "./dist/index.js",
   "paperclipPlugin": {
@@ -35,7 +35,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mvanhorn/paperclip-plugin-telegram.git"
+    "url": "git+https://github.com/ant013/paperclip-plugin-telegram.git"
   },
   "license": "MIT"
 }

@@ -5,7 +5,7 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Telegram Bot",
+  displayName: "Telegram Bot (Gimle Fork)",
   description:
     "Bidirectional Telegram integration: push notifications, bot commands, escalation to humans, multi-agent sessions (native + ACP), media pipeline with transcription, custom workflow commands, and proactive suggestion watches.",
   author: "mvanhorn",
