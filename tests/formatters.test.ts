@@ -180,6 +180,14 @@ describe("formatApprovalCreated", () => {
     expect(msg.text).toContain("Builder");
   });
 
+  it("uses displayName as agent label fallback", () => {
+    const msg = formatApprovalCreated(mockEvent({
+      displayName: "Release Captain",
+      type: "deploy",
+    }));
+    expect(msg.text).toContain("Release Captain");
+  });
+
   it("includes linked issues", () => {
     const msg = formatApprovalCreated(mockEvent({
       linkedIssues: [
@@ -209,6 +217,14 @@ describe("formatAgentError", () => {
     expect(msg.text).toContain("Connection refused");
   });
 
+  it("uses displayName before raw ids for errors", () => {
+    const msg = formatAgentError(mockEvent({
+      displayName: "Ops Watch",
+      error: "Connection refused",
+    }));
+    expect(msg.text).toContain("Ops Watch");
+  });
+
   it("truncates long error messages", () => {
     const longError = "x".repeat(600);
     const msg = formatAgentError(mockEvent({ error: longError }));
@@ -229,6 +245,11 @@ describe("formatAgentRunStarted", () => {
     expect(msg.text).toContain("started");
   });
 
+  it("uses displayName as run-start label fallback", () => {
+    const msg = formatAgentRunStarted(mockEvent({ displayName: "Ship Bot" }));
+    expect(msg.text).toContain("Ship Bot");
+  });
+
   it("disables notification", () => {
     const msg = formatAgentRunStarted(mockEvent());
     expect(msg.options.disableNotification).toBe(true);
@@ -240,6 +261,11 @@ describe("formatAgentRunFinished", () => {
     const msg = formatAgentRunFinished(mockEvent({ agentName: "Deployer" }));
     expect(msg.text).toContain("Deployer");
     expect(msg.text).toContain("completed");
+  });
+
+  it("uses displayName as run-finished label fallback", () => {
+    const msg = formatAgentRunFinished(mockEvent({ displayName: "Ship Bot" }));
+    expect(msg.text).toContain("Ship Bot");
   });
 
   it("disables notification", () => {

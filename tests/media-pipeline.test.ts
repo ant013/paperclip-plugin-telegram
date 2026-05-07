@@ -53,6 +53,7 @@ function mockCtx(): PluginContext {
       }),
     },
     agents: {
+      get: vi.fn().mockResolvedValue(null),
       invoke: vi.fn().mockResolvedValue({ runId: "run-1" }),
       sessions: {
         sendMessage: vi.fn(),
@@ -316,6 +317,33 @@ describe("Media routing to agents in threads", () => {
       "media_message",
       "project-1",
     );
+  });
+});
+
+describe("Brief agent display names", () => {
+  it("uses resolved brief agent name in intake confirmation and keeps run link", async () => {
+    const ctx = mockCtx();
+    (ctx.agents.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "brief-agent",
+      name: "Brief Writer",
+    });
+
+    await handleMediaMessage(ctx, "token", {
+      message_id: 1,
+      chat: { id: 123 },
+      photo: [{ file_id: "photo-1", width: 800, height: 600 }],
+      caption: "A nice photo",
+    }, {
+      ...defaultConfig,
+      briefAgentChatIds: ["123"],
+      publicUrl: "https://paperclip.example",
+    }, "company-1");
+
+    const confirmation = sentMessages.find((message) => message.text.includes("Media sent"));
+    expect(confirmation?.text).toContain("Brief Writer");
+    expect(confirmation?.options?.inlineKeyboard).toEqual([
+      [{ text: "View Run ↗", url: "https://paperclip.example/agents/brief-agent/runs/run-1" }],
+    ]);
   });
 });
 
