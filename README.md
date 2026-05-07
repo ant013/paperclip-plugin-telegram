@@ -30,6 +30,7 @@ This is that plugin.
 - **Approval requested** - Interactive **Approve** and **Reject** inline buttons. Click to act without leaving Telegram.
 - **Agent error** - Error message with warning indicator
 - **Agent run started/finished** - Lifecycle notifications
+- Agent/bot notifications use Paperclip agent names when available. Agent IDs and run IDs stay in links and selected debug/session contexts.
 
 ### Interactive approvals
 - Approve/reject inline buttons on every approval notification

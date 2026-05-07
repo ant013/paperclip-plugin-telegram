@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getSessions, routeMessageToAgent, handleHandoffToolCall } from "../src/acp-bridge.js";
+import { getSessions, routeMessageToAgent, handleHandoffToolCall, handleAcpCommand } from "../src/acp-bridge.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 let sentMessages: Array<{ chatId: string; text: string; options?: Record<string, unknown> }> = [];
@@ -38,6 +38,7 @@ function mockCtx(): PluginContext {
     },
     agents: {
       get: vi.fn().mockResolvedValue(null),
+      list: vi.fn().mockResolvedValue([]),
       sessions: {
         create: vi.fn().mockResolvedValue({ sessionId: "native-session-1" }),
         sendMessage: vi.fn(),
@@ -237,6 +238,22 @@ describe("Session registry - max enforcement", () => {
     const s2 = await getSessions(ctx, "chat-1", 20);
     expect(s1[0].sessionId).toBe("a");
     expect(s2[0].sessionId).toBe("b");
+  });
+});
+
+describe("handleAcpCommand - resolved display names", () => {
+  it("uses Paperclip agent name for native session display", async () => {
+    const ctx = mockCtx();
+    (ctx.agents.list as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "agent-1", name: "Build Captain", urlKey: "builder" },
+    ]);
+
+    await handleAcpCommand(ctx, "token", "chat-1", "spawn builder", 42, "company-1");
+
+    const sessions = stateStore["sessions_chat-1_42"] as Array<Record<string, unknown>>;
+    expect(sessions[0].agentName).toBe("builder");
+    expect(sessions[0].agentDisplayName).toBe("Build Captain");
+    expect(sentMessages.some((message) => message.text.includes("Build Captain"))).toBe(true);
   });
 });
 

@@ -49,6 +49,7 @@ import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
+import { displayNameFromFields, resolveAgentDisplayName, type AgentLabelCache } from "./agent-labels.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -433,6 +434,7 @@ const plugin = definePlugin({
     // --- Event subscriptions ---
 
     const issuePrefixCache = new Map<string, string>();
+    const agentLabelCache: AgentLabelCache = new Map();
 
     async function resolveIssueLinksOpts(companyId: string): Promise<IssueLinksOpts> {
       let prefix = issuePrefixCache.get(companyId);
@@ -443,6 +445,20 @@ const plugin = definePlugin({
       }
       return { baseUrl: publicUrl, issuePrefix: prefix || undefined };
     }
+
+    const enrichAgentName = async (event: PluginEvent, options: { fallbackToEntityId?: boolean } = {}) => {
+      const payload = event.payload as Record<string, unknown>;
+      const existingName = displayNameFromFields(payload.agentName, payload.displayName, payload.name);
+      if (existingName) {
+        payload.agentName = existingName;
+        return existingName;
+      }
+
+      const agentId = displayNameFromFields(payload.agentId, options.fallbackToEntityId ? event.entityId : null);
+      const agentName = await resolveAgentDisplayName(ctx, event.companyId, agentId, { cache: agentLabelCache });
+      if (agentName) payload.agentName = agentName;
+      return agentName;
+    };
 
     const notify = async (
       event: PluginEvent,
@@ -629,13 +645,7 @@ const plugin = definePlugin({
             }
           } catch { /* best effort */ }
         }
-        // Enrich agent name
-        if (payload.agentId && !payload.agentName) {
-          try {
-            const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
-            if (agent) payload.agentName = agent.name;
-          } catch { /* best effort */ }
-        }
+        await enrichAgentName(event);
         // Build a meaningful title if still missing
         if (!payload.title || payload.title === "Approval Requested") {
           const approvalType = String(payload.type ?? "unknown").replace(/_/g, " ");
@@ -653,12 +663,7 @@ const plugin = definePlugin({
       ctx.events.on("agent.run.failed", async (event: PluginEvent) => {
         const payload = event.payload as Record<string, unknown>;
         const agentId = String(payload.agentId ?? event.entityId);
-        if (payload.agentId && !payload.agentName) {
-          try {
-            const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
-            if (agent) payload.agentName = agent.name;
-          } catch { /* best effort */ }
-        }
+        await enrichAgentName(event, { fallbackToEntityId: true });
         if (!payload.companyName) {
           try {
             const company = await ctx.companies.get(event.companyId);
@@ -681,25 +686,15 @@ const plugin = definePlugin({
       });
     }
 
-    const enrichAgentName = async (event: PluginEvent) => {
-      const payload = event.payload as Record<string, unknown>;
-      if (payload.agentId && !payload.agentName) {
-        try {
-          const agent = await ctx.agents.get(String(payload.agentId), event.companyId);
-          if (agent) payload.agentName = agent.name;
-        } catch { /* best effort */ }
-      }
-    };
-
     if (config.notifyOnAgentRunStarted) {
       ctx.events.on("agent.run.started", async (event: PluginEvent) => {
-        await enrichAgentName(event);
+        await enrichAgentName(event, { fallbackToEntityId: true });
         await notify(event, formatAgentRunStarted);
       });
     }
     if (config.notifyOnAgentRunFinished) {
       ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
-        await enrichAgentName(event);
+        await enrichAgentName(event, { fallbackToEntityId: true });
         await notify(event, formatAgentRunFinished);
       });
     }

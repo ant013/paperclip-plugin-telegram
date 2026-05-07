@@ -2,6 +2,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, escapeMarkdownV2, sendChatAction } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 import { getSessions, wakeAgentWithIssue } from "./acp-bridge.js";
+import { resolveAgentDisplayName } from "./agent-labels.js";
 
 const TELEGRAM_API = "https://api.telegram.org";
 
@@ -94,12 +95,15 @@ export async function handleMediaMessage(
       const inlineKeyboard = hasPublicUrl
         ? [[{ text: "View Run ↗", url: `${config.publicUrl}/agents/${config.briefAgentId}/runs/${runId}` }]]
         : undefined;
+      const briefAgentName = await resolveAgentDisplayName(ctx, companyId, config.briefAgentId, {
+        fallbackName: "Brief Agent",
+      }) ?? "Brief Agent";
 
       await sendMessage(
         ctx,
         token,
         chatId,
-        `${escapeMarkdownV2("\ud83d\udcdd")} Media sent to Brief Agent \\(run: \`${escapeMarkdownV2(runId)}\`\\)`,
+        `${escapeMarkdownV2("\ud83d\udcdd")} Media sent to ${escapeMarkdownV2(briefAgentName)} \\(run: \`${escapeMarkdownV2(runId)}\`\\)`,
         {
           parseMode: "MarkdownV2",
           messageThreadId: threadId,

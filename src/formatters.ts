@@ -163,7 +163,7 @@ export function formatApprovalCreated(event: PluginEvent, opts?: IssueLinksOpts)
   const approvalId = String(p.approvalId ?? event.entityId);
   const title = String(p.title ?? "Approval Requested");
   const description = p.description ? String(p.description) : null;
-  const agentName = p.agentName ? String(p.agentName) : null;
+  const agentName = p.agentName ? String(p.agentName) : p.displayName ? String(p.displayName) : p.name ? String(p.name) : null;
 
   const lines: string[] = [
     `${esc("🔔")} ${bold("Approval Requested")}`,
@@ -217,7 +217,7 @@ export function formatApprovalCreated(event: PluginEvent, opts?: IssueLinksOpts)
 export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const agentId = String(p.agentId ?? event.entityId);
-  const agentName = String(p.agentName ?? p.name ?? agentId);
+  const agentName = String(p.agentName ?? p.displayName ?? p.name ?? agentId);
   const errorMessage = String(p.error ?? p.message ?? "Unknown error");
   const runId = p.runId ? String(p.runId) : null;
   const companyName = p.companyName ? String(p.companyName) : null;
@@ -256,7 +256,7 @@ export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): For
 export function formatAgentRunStarted(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const agentId = String(p.agentId ?? event.entityId);
-  const agentName = String(p.agentName ?? agentId);
+  const agentName = String(p.agentName ?? p.displayName ?? p.name ?? agentId);
   const runId = p.runId ? String(p.runId) : null;
 
   const buttons: Array<{ text: string; url: string }> = [];
@@ -280,7 +280,7 @@ export function formatAgentRunStarted(event: PluginEvent, opts?: IssueLinksOpts)
 export function formatAgentRunFinished(event: PluginEvent, opts?: IssueLinksOpts): FormattedMessage {
   const p = event.payload as Payload;
   const agentId = String(p.agentId ?? event.entityId);
-  const agentName = String(p.agentName ?? agentId);
+  const agentName = String(p.agentName ?? p.displayName ?? p.name ?? agentId);
   const runId = p.runId ? String(p.runId) : null;
 
   const buttons: Array<{ text: string; url: string }> = [];

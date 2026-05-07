@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleMediaMessage } from "../src/media-pipeline.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
@@ -53,6 +53,7 @@ function mockCtx(): PluginContext {
       }),
     },
     agents: {
+      get: vi.fn().mockResolvedValue(null),
       invoke: vi.fn().mockResolvedValue({ runId: "run-1" }),
       sessions: {
         sendMessage: vi.fn(),
@@ -74,6 +75,16 @@ beforeEach(() => {
   sentMessages = [];
   stateStore = {};
   emittedEvents = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (String(url).includes("openai.com")) {
+      return { json: () => Promise.resolve({ text: "Transcribed media" }) };
+    }
+    return { arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)) };
+  }));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("Intake detection", () => {
@@ -310,6 +321,33 @@ describe("Media routing to agents in threads", () => {
     }, { ...defaultConfig, briefAgentChatIds: [] }, "company-1");
 
     expect(wakeAgentWithIssue).toHaveBeenCalled();
+  });
+});
+
+describe("Brief agent display names", () => {
+  it("uses resolved brief agent name in intake confirmation and keeps run link", async () => {
+    const ctx = mockCtx();
+    (ctx.agents.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "brief-agent",
+      name: "Brief Writer",
+    });
+
+    await handleMediaMessage(ctx, "token", {
+      message_id: 1,
+      chat: { id: 123 },
+      photo: [{ file_id: "photo-1", width: 800, height: 600 }],
+      caption: "A nice photo",
+    }, {
+      ...defaultConfig,
+      briefAgentChatIds: ["123"],
+      publicUrl: "https://paperclip.example",
+    }, "company-1");
+
+    const confirmation = sentMessages.find((message) => message.text.includes("Media sent"));
+    expect(confirmation?.text).toContain("Brief Writer");
+    expect(confirmation?.options?.inlineKeyboard).toEqual([
+      [{ text: "View Run ↗", url: "https://paperclip.example/agents/brief-agent/runs/run-1" }],
+    ]);
   });
 });
 
