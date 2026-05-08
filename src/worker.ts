@@ -597,6 +597,23 @@ export const plugin = definePlugin({
 
     const token = await ctx.secrets.resolve(config.telegramBotTokenRef);
 
+    const runActionContext = (params: Record<string, unknown>) => ({
+      companyId: asNonEmptyString(params.companyId) ?? "system",
+      agentId: asNonEmptyString(params.agentId) ?? "system",
+    });
+
+    const invokeSendToTelegramAction = async (params: Record<string, unknown>) => {
+      const runCtx = runActionContext(params);
+      const result = await sendToTelegramTool(ctx, token, config, params, runCtx);
+      return {
+        content: result.content,
+        data: result.data,
+      };
+    };
+
+    ctx.actions.register("send_to_telegram", (params) => invokeSendToTelegramAction(params as Record<string, unknown>));
+    ctx.actions.register("send_file_to_telegram", (params) => invokeSendToTelegramAction(params as Record<string, unknown>));
+
     // --- Register bot commands with Telegram ---
     if (config.enableCommands) {
       const allCommands = [
