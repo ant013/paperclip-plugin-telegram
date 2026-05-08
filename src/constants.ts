@@ -34,6 +34,14 @@ export const DEFAULT_CONFIG = {
     chatId: string;
     topicId?: string;
   }>,
+  opsRoutes: [] as Array<{
+    name: string;
+    enabled: boolean;
+    companyId?: string;
+    companyName?: string;
+    chatId: string;
+    topicId?: string;
+  }>,
   digestMode: "off" as "off" | "daily" | "bidaily" | "tridaily",
   dailyDigestTime: "09:00",
   bidailySecondTime: "17:00",
