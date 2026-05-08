@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Expands `<!-- @include fragments/X.md -->` markers into dist bundles.
+# Outputs are committed so instruction changes are reviewable.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FRAG_DIR="$SCRIPT_DIR/fragments"
+
+TARGET="codex"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --target)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --target requires codex" >&2
+        exit 1
+      fi
+      TARGET="$2"
+      shift 2
+      ;;
+    --target=*)
+      TARGET="${1#--target=}"
+      shift
+      ;;
+    -h|--help)
+      cat <<'USAGE'
+Usage:
+  ./paperclips/build.sh
+  ./paperclips/build.sh --target codex
+
+Targets:
+  codex   Builds paperclips/roles-codex/*.md into paperclips/dist/codex/*.md.
+USAGE
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "$TARGET" in
+  codex)
+    ROLES_DIR="$SCRIPT_DIR/roles-codex"
+    OUT_DIR="$SCRIPT_DIR/dist/codex"
+    ;;
+  *)
+    echo "ERROR: unknown target: $TARGET" >&2
+    exit 1
+    ;;
+esac
+
+if [ ! -d "$ROLES_DIR" ]; then
+  echo "ERROR: roles directory not found for target '$TARGET': $ROLES_DIR" >&2
+  exit 1
+fi
+
+mkdir -p "$OUT_DIR"
+rm -f "$OUT_DIR"/*.md
+
+found=0
+for role_file in "$ROLES_DIR"/*.md; do
+  [ -e "$role_file" ] || continue
+  found=1
+  role_name=$(basename "$role_file")
+  out_file="$OUT_DIR/$role_name"
+  awk -v frag_dir="$FRAG_DIR" '
+    NR == 1 && $0 == "---" {
+      in_front_matter = 1
+      next
+    }
+    in_front_matter {
+      if ($0 == "---") {
+        in_front_matter = 0
+        skip_front_matter_gap = 1
+      }
+      next
+    }
+    skip_front_matter_gap && $0 == "" {
+      skip_front_matter_gap = 0
+      next
+    }
+    {
+      skip_front_matter_gap = 0
+    }
+    /<!-- @include fragments\/.*\.md -->/ {
+      match($0, /fragments\/[^ ]+\.md/)
+      frag = substr($0, RSTART + 10, RLENGTH - 10)
+      path = frag_dir "/" frag
+      read_status = getline line < path
+      if (read_status < 0) {
+        print "ERROR: include fragment not readable: " path > "/dev/stderr"
+        close(path)
+        exit 2
+      }
+      if (read_status > 0) print line
+      while ((getline line < path) > 0) print line
+      close(path)
+      next
+    }
+    { print }
+  ' "$role_file" > "$out_file"
+
+  echo "built $out_file"
+done
+
+if [ "$found" -eq 0 ]; then
+  echo "ERROR: no role files found for target '$TARGET' in $ROLES_DIR" >&2
+  exit 1
+fi
