@@ -62,7 +62,7 @@ async function runSendToTelegram(
   params: Record<string, unknown>,
   config: Config,
   ctx: PluginContext,
-): Promise<{ content: string; data: { ok: boolean; code?: string } }> {
+): Promise<Awaited<ReturnType<typeof sendToTelegramTool>>> {
   return sendToTelegramTool(ctx, "resolved-token", config, params, runCtx);
 }
 
@@ -139,6 +139,328 @@ describe("sendToTelegramTool", () => {
         caption: "Quarterly report",
       }),
     );
+  });
+
+  it("routes markdown documents by explicit projectKey without requiring the explicit-chat allowlist", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# TEL Report",
+        projectKey: "TEL",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002", topicId: "44" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "document",
+      chatId: "-2002",
+      threadId: 44,
+      routeSource: "file_route",
+      routeName: "TEL files",
+      projectKey: "TEL",
+      messageId: 202,
+    });
+    expect(telegramApi.sendDocument).toHaveBeenCalledWith(
+      ctx,
+      "resolved-token",
+      "-2002",
+      "# TEL Report",
+      expect.objectContaining({
+        messageThreadId: 44,
+      }),
+    );
+  });
+
+  it("routes markdown documents by issueIdentifier project prefix", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# TEST Report",
+        issueIdentifier: "TEST-12",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002" },
+          { name: "TEST files", enabled: true, projectKey: "TEST", chatId: "-3003", topicId: "9" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "document",
+      chatId: "-3003",
+      threadId: 9,
+      routeSource: "file_route",
+      routeName: "TEST files",
+      projectKey: "TEST",
+      issueIdentifier: "TEST-12",
+    });
+  });
+
+  it("resolves issueId within the current company before routing markdown documents", async () => {
+    const ctx = {
+      ...createContext(async () => ({ ok: true }) as Response),
+      issues: {
+        get: vi.fn(async (issueId: string, companyId: string) => ({
+          id: issueId,
+          companyId,
+          identifier: "TEL-23",
+          title: "Route files",
+        })),
+      },
+    } as unknown as PluginContext;
+
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# Issue Report",
+        issueId: "issue-23",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(ctx.issues.get).toHaveBeenCalledWith("issue-23", "company-1");
+    expect(result.data).toMatchObject({
+      ok: true,
+      chatId: "-2002",
+      routeSource: "file_route",
+      projectKey: "TEL",
+      issueIdentifier: "TEL-23",
+    });
+  });
+
+  it("rejects route-aware markdown when issueId cannot be resolved even with projectKey", async () => {
+    const ctx = {
+      ...createContext(async () => ({ ok: true }) as Response),
+      issues: {
+        get: vi.fn(async () => null),
+      },
+    } as unknown as PluginContext;
+
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# Issue Report",
+        issueId: "foreign-issue",
+        projectKey: "TEL",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(ctx.issues.get).toHaveBeenCalledWith("foreign-issue", "company-1");
+    expect(result.data).toMatchObject({
+      ok: false,
+      code: "unresolved_issue",
+    });
+    expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when route-aware markdown has no matching project route", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# OPS Report",
+        issueIdentifier: "OPS-1",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: false,
+      code: "unknown_project_route",
+      projectKey: "OPS",
+      issueIdentifier: "OPS-1",
+    });
+    expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+    expect(telegramApi.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when duplicate enabled routes match the same project key", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# TEL Report",
+        issueIdentifier: "TEL-23",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files A", enabled: true, projectKey: "TEL", chatId: "-2002" },
+          { name: "TEL files B", enabled: true, projectKey: "TEL", chatId: "-3003" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: false,
+      code: "ambiguous_route",
+      projectKey: "TEL",
+    });
+    expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an enabled file route has invalid config", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# TEL Report",
+        projectKey: "TEL",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "not-a-chat" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: false,
+      code: "invalid_route_config",
+      projectKey: "TEL",
+    });
+    expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("ignores disabled invalid routes and uses the enabled matching route", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# TEL Report",
+        projectKey: "TEL",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "", enabled: false, projectKey: "", chatId: "not-a-chat", topicId: "bad" },
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({ ok: true, chatId: "-2002", routeSource: "file_route" });
+    expect(telegramApi.sendDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects route-aware markdown mixed with explicit destination fields", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const withChatId = await runSendToTelegram(
+      {
+        markdownContent: "# TEL Report",
+        projectKey: "TEL",
+        chatId: "-1001",
+      },
+      {
+        ...defaultConfig,
+        allowedTelegramChatIds: ["-1001"],
+        fileRoutes: [{ name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002" }],
+      },
+      ctx,
+    );
+    const withThreadId = await runSendToTelegram(
+      {
+        markdownContent: "# TEL Report",
+        projectKey: "TEL",
+        threadId: 5,
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [{ name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002" }],
+      },
+      ctx,
+    );
+
+    expect(withChatId.data).toMatchObject({ ok: false, code: "conflicting_destination" });
+    expect(withThreadId.data).toMatchObject({ ok: false, code: "conflicting_destination" });
+    expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit chatId and threadId compatibility for markdown documents", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      {
+        markdownContent: "# Explicit Report",
+        chatId: "-2002",
+        threadId: 77,
+      },
+      {
+        ...defaultConfig,
+        allowedTelegramChatIds: ["-2002"],
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-3003", topicId: "9" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "document",
+      chatId: "-2002",
+      threadId: 77,
+      routeSource: "explicit",
+    });
+  });
+
+  it("leaves text-only sends on legacy fallback even when route fields are provided", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      {
+        text: "hello TEL",
+        projectKey: "TEL",
+      },
+      {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002", topicId: "44" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "message",
+      chatId: "-1001",
+      routeSource: "legacy_fallback",
+    });
+    expect(telegramApi.sendMessage).toHaveBeenCalledWith(
+      ctx,
+      "resolved-token",
+      "-1001",
+      "hello TEL",
+      expect.objectContaining({ messageThreadId: undefined }),
+    );
+    expect(telegramApi.sendDocument).not.toHaveBeenCalled();
   });
 
   it("rejects explicit disallowed chat ids before Telegram API calls", async () => {

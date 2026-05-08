@@ -185,6 +185,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `onlyNotifyBoardApprovals` | No | When enabled, send Telegram approval notifications only for `request_board_approval` approvals |
 | `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use commands, inbound replies, media intake, and inline buttons. Empty means any user is allowed |
 | `allowedTelegramChatIds` | No | Optional allowlist of Telegram **inbound** chat IDs where commands, inbound replies, media intake, and inline buttons are accepted. Empty means any chat is allowed |
+| `fileRoutes` | No | Agent Markdown document routes keyed by Paperclip project key, for example `TEL -> Telegram chat/topic` |
 | `topicRouting` | No | Map forum topics to projects (default: false) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for digest, HH:MM (default: 09:00) |
@@ -231,6 +232,28 @@ Outbound rules:
 
 The allowlist is only an outbound gate for explicit `chatId`; it is not a global override for all outbound sends.
 
+### Project-key file routes
+
+Use the **Files** section in plugin settings, or configure `fileRoutes`, to route agent-sent Markdown documents by Paperclip project key:
+
+```json
+{
+  "fileRoutes": [
+    {
+      "name": "TEL files",
+      "enabled": true,
+      "projectKey": "TEL",
+      "chatId": "-1002222222222",
+      "topicId": "1"
+    }
+  ]
+}
+```
+
+Only `send_to_telegram` / `send_file_to_telegram` calls with `markdownContent` use file routes. Route context can be passed as `projectKey`, `issueIdentifier` such as `TEL-23`, or `issueId`. Text-only sends keep the existing default/company chat fallback behavior.
+
+Route-aware Markdown sends fail closed before calling Telegram when no enabled route matches, duplicate enabled routes match the same project key, enabled route config is invalid, `issueId` cannot be resolved in the current company, or route context is mixed with explicit `chatId`/`threadId`. Configured `fileRoutes[].chatId` values are operator-managed destinations and do not require `allowedTelegramChatIds`; explicit `chatId` calls still do.
+
 ### Board access for approval actions
 
 Approval buttons and `/approve <approval-id>` call Paperclip approval APIs. Authenticated Paperclip deployments may require a board API token for those mutations.
@@ -261,6 +284,9 @@ Schema (shared with `send_file_to_telegram`):
 - `text` (optional): text message, or caption when `markdownContent` is provided.
 - `markdownContent` (optional): markdown document content to upload as a `.md` file.
 - `chatId` (optional): explicit Telegram chat ID override.
+- `projectKey` (optional): Paperclip project key for Markdown document routing, for example `TEL`.
+- `issueIdentifier` (optional): Paperclip issue key for Markdown document routing, for example `TEL-23`.
+- `issueId` (optional): Paperclip issue ID used to resolve the issue key for Markdown document routing.
 - `markdownFileName` (optional): filename for markdown upload, defaults to `paperclip-message.md`.
 - `parseMode` (optional): `MarkdownV2` or `HTML` for text/caption only.
 - `threadId` (optional): Telegram forum topic ID.
@@ -276,6 +302,7 @@ Validation and behavior:
 - Safe filename checks reject separators, traversal (`../`, `..\\`, `/`, `\\`), dotfiles, secret-like names (`secret`, `token`, `credential`, `password`, `private-key`), and Windows drive prefixes like `C:report.md`.
 - `markdownContent` and `text` caps are enforced: `256 KiB` and `1024` bytes respectively.
 - Explicit `chatId` must pass `allowedTelegramChatIds`; empty allowlist rejects explicit IDs.
+- Route-aware Markdown document sends use `fileRoutes`; unmatched, ambiguous, invalid, or conflicting route inputs are rejected before any Telegram API call.
 - Response includes structured result/error with required codes:
   - `missing_content`
   - `disallowed_chat`
@@ -284,6 +311,11 @@ Validation and behavior:
   - `non_markdown_file`
   - `unsafe_filename`
   - `unsupported_file_source`
+  - `unknown_project_route`
+  - `ambiguous_route`
+  - `invalid_route_config`
+  - `conflicting_destination`
+  - `unresolved_issue`
   - `markdown_too_large`
   - `caption_too_large`
   - `telegram_send_failed`

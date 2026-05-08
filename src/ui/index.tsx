@@ -4,6 +4,10 @@ import {
   usePluginData,
   type PluginSettingsPageProps,
 } from "@paperclipai/plugin-sdk/ui";
+import {
+  getTelegramFileRouteSaveErrors,
+  parseProjectKeyFromIssueIdentifier,
+} from "../file-routing.js";
 
 type BoardAccessRegistration = {
   configured: boolean;
@@ -52,6 +56,7 @@ type TelegramRoutingConfig = {
   defaultChatId: string;
   topicRouting: boolean;
   maxAgentsPerThread: number;
+  fileRoutes: TelegramFileRouteConfig[];
   notifyOnIssueCreated: boolean;
   notifyOnIssueDone: boolean;
   notifyOnIssueAssigned: boolean;
@@ -71,6 +76,14 @@ type TelegramRoutingConfig = {
   dailyDigestTime: string;
   bidailySecondTime: string;
   tridailyTimes: string;
+};
+
+type TelegramFileRouteConfig = {
+  name: string;
+  enabled: boolean;
+  projectKey: string;
+  chatId: string;
+  topicId: string;
 };
 
 type TelegramConnectionConfig = {
@@ -118,6 +131,7 @@ const DEFAULT_ROUTING_CONFIG: TelegramRoutingConfig = {
   defaultChatId: "",
   topicRouting: false,
   maxAgentsPerThread: 5,
+  fileRoutes: [],
   notifyOnIssueCreated: true,
   notifyOnIssueDone: true,
   notifyOnIssueAssigned: false,
@@ -223,6 +237,21 @@ function asStringArray(value: unknown): string[] {
     : [];
 }
 
+function asFileRoutes(value: unknown): TelegramFileRouteConfig[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> =>
+      typeof item === "object" && item !== null && !Array.isArray(item)
+    )
+    .map((route) => ({
+      name: asString(route.name),
+      enabled: asBoolean(route.enabled, true),
+      projectKey: asString(route.projectKey).toUpperCase(),
+      chatId: asString(route.chatId),
+      topicId: asString(route.topicId),
+    }));
+}
+
 function asDigestMode(value: unknown): TelegramRoutingConfig["digestMode"] {
   return value === "daily" || value === "bidaily" || value === "tridaily" ? value : "off";
 }
@@ -236,6 +265,7 @@ function extractRoutingConfig(config: Record<string, unknown>): TelegramRoutingC
     defaultChatId: asString(config.defaultChatId),
     topicRouting: asBoolean(config.topicRouting, DEFAULT_ROUTING_CONFIG.topicRouting),
     maxAgentsPerThread: asNumber(config.maxAgentsPerThread, DEFAULT_ROUTING_CONFIG.maxAgentsPerThread),
+    fileRoutes: asFileRoutes(config.fileRoutes),
     notifyOnIssueCreated: asBoolean(
       config.notifyOnIssueCreated,
       DEFAULT_ROUTING_CONFIG.notifyOnIssueCreated,
@@ -609,6 +639,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
   const [routingLoading, setRoutingLoading] = useState(true);
   const [routingSaving, setRoutingSaving] = useState(false);
   const [routingMessage, setRoutingMessage] = useState<Notice | null>(null);
+  const [fileRoutePreviewIssueKey, setFileRoutePreviewIssueKey] = useState("TEL-8");
   const [connectionConfig, setConnectionConfig] = useState<TelegramConnectionConfig>(DEFAULT_CONNECTION_CONFIG);
   const [connectionSnapshot, setConnectionSnapshot] = useState<TelegramConnectionConfig>(DEFAULT_CONNECTION_CONFIG);
   const [connectionLoading, setConnectionLoading] = useState(true);
@@ -650,6 +681,11 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
   const mediaDirty = JSON.stringify(mediaConfig) !== JSON.stringify(mediaSnapshot);
   const escalationDirty = JSON.stringify(escalationConfig) !== JSON.stringify(escalationSnapshot);
   const proactiveDirty = JSON.stringify(proactiveConfig) !== JSON.stringify(proactiveSnapshot);
+  const fileRouteSaveErrors = getTelegramFileRouteSaveErrors(routingConfig.fileRoutes);
+  const fileRoutePreviewProjectKey = parseProjectKeyFromIssueIdentifier(fileRoutePreviewIssueKey);
+  const fileRoutePreviewMatch = fileRoutePreviewProjectKey
+    ? routingConfig.fileRoutes.find((route) => route.enabled && route.projectKey === fileRoutePreviewProjectKey)
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -897,6 +933,44 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setRoutingMessage(null);
   }
 
+  function updateFileRoute(
+    index: number,
+    patch: Partial<TelegramFileRouteConfig>,
+  ): void {
+    setRoutingConfig((current) => ({
+      ...current,
+      fileRoutes: current.fileRoutes.map((route, routeIndex) =>
+        routeIndex === index ? { ...route, ...patch } : route
+      ),
+    }));
+    setRoutingMessage(null);
+  }
+
+  function addFileRoute(): void {
+    setRoutingConfig((current) => ({
+      ...current,
+      fileRoutes: [
+        ...current.fileRoutes,
+        {
+          name: "",
+          enabled: false,
+          projectKey: "",
+          chatId: "",
+          topicId: "",
+        },
+      ],
+    }));
+    setRoutingMessage(null);
+  }
+
+  function removeFileRoute(index: number): void {
+    setRoutingConfig((current) => ({
+      ...current,
+      fileRoutes: current.fileRoutes.filter((_, routeIndex) => routeIndex !== index),
+    }));
+    setRoutingMessage(null);
+  }
+
   function updateBoardField<K extends keyof TelegramBoardConfig>(
     key: K,
     value: TelegramBoardConfig[K],
@@ -994,6 +1068,16 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
   }
 
   async function handleSaveRoutingConfig(): Promise<void> {
+    const routeErrors = getTelegramFileRouteSaveErrors(routingConfig.fileRoutes);
+    if (routeErrors.length > 0) {
+      setRoutingMessage({
+        tone: "error",
+        title: "File routes need attention",
+        text: routeErrors.join(" "),
+      });
+      return;
+    }
+
     setRoutingSaving(true);
     setRoutingMessage(null);
     try {
@@ -1628,6 +1712,183 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               border: "1px solid #e5e7eb",
               borderRadius: 8,
               display: "grid",
+              gap: 12,
+              padding: 12,
+            }}
+          >
+            <div style={{ alignItems: "center", display: "flex", gap: 12, justifyContent: "space-between" }}>
+              <div style={{ display: "grid", gap: 3 }}>
+                <strong>Files</strong>
+                <span style={helperTextStyle}>
+                  Routes Markdown document sends by project key. Issue keys such as TEL-8 match the TEL route.
+                </span>
+              </div>
+              <button
+                disabled={routingLoading || routingSaving}
+                onClick={addFileRoute}
+                style={{
+                  background: "white",
+                  border: "1px solid #d1d5db",
+                  borderRadius: 8,
+                  color: "#374151",
+                  cursor: routingLoading || routingSaving ? "not-allowed" : "pointer",
+                  fontWeight: 700,
+                  padding: "9px 12px",
+                }}
+                type="button"
+              >
+                Add route
+              </button>
+            </div>
+
+            {routingConfig.fileRoutes.length === 0 ? (
+              <div
+                style={{
+                  border: "1px dashed #d1d5db",
+                  borderRadius: 8,
+                  color: "#6b7280",
+                  fontSize: 13,
+                  padding: "9px 10px",
+                }}
+              >
+                No file routes configured
+              </div>
+            ) : null}
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {routingConfig.fileRoutes.map((route, index) => (
+                <div
+                  key={index}
+                  style={{
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 8,
+                    display: "grid",
+                    gap: 10,
+                    padding: 10,
+                  }}
+                >
+                  <div style={{ alignItems: "center", display: "flex", gap: 10, justifyContent: "space-between" }}>
+                    <label style={{ alignItems: "center", color: "#374151", display: "flex", fontSize: 13, gap: 8 }}>
+                      <input
+                        checked={route.enabled}
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateFileRoute(index, { enabled: event.currentTarget.checked })}
+                        type="checkbox"
+                      />
+                      Enabled
+                    </label>
+                    <button
+                      disabled={routingLoading || routingSaving}
+                      onClick={() => removeFileRoute(index)}
+                      style={{
+                        background: "white",
+                        border: "1px solid #d1d5db",
+                        borderRadius: 8,
+                        color: "#374151",
+                        cursor: routingLoading || routingSaving ? "not-allowed" : "pointer",
+                        fontWeight: 700,
+                        padding: "8px 10px",
+                      }}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <div style={{ alignItems: "stretch", display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Route name</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateFileRoute(index, { name: event.currentTarget.value })}
+                        placeholder="TEL files"
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.name}
+                      />
+                      <span style={helperTextStyle}>Operator-facing label for this file route.</span>
+                    </label>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Project key</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) =>
+                          updateFileRoute(index, {
+                            projectKey: event.currentTarget.value.toUpperCase().replace(/[^A-Z0-9]/g, ""),
+                          })
+                        }
+                        placeholder="TEL"
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.projectKey}
+                      />
+                      <span style={helperTextStyle}>Uppercase letters and numbers.</span>
+                    </label>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Chat ID</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateFileRoute(index, { chatId: event.currentTarget.value })}
+                        placeholder="-1003800613668"
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.chatId}
+                      />
+                      <span style={helperTextStyle}>Destination chat for matching Markdown files.</span>
+                    </label>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Topic ID</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateFileRoute(index, { topicId: event.currentTarget.value })}
+                        placeholder="1"
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.topicId}
+                      />
+                      <span style={helperTextStyle}>Optional numeric forum topic.</span>
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ display: "grid", gap: 5, maxWidth: 320 }}>
+                <span style={{ color: "#4b5563", fontSize: 12, fontWeight: 700 }}>Test issue key</span>
+                <input
+                  disabled={routingLoading || routingSaving}
+                  onChange={(event) => setFileRoutePreviewIssueKey(event.currentTarget.value.toUpperCase())}
+                  placeholder="TEL-8"
+                  style={standardInputStyle}
+                  type="text"
+                  value={fileRoutePreviewIssueKey}
+                />
+              </label>
+              <span style={helperTextStyle}>
+                {fileRoutePreviewProjectKey
+                  ? fileRoutePreviewMatch
+                    ? `${fileRoutePreviewIssueKey} -> ${fileRoutePreviewMatch.name || fileRoutePreviewMatch.projectKey}`
+                    : `${fileRoutePreviewIssueKey} -> no enabled route for ${fileRoutePreviewProjectKey}`
+                  : `${fileRoutePreviewIssueKey || "Issue key"} -> invalid issue key`}
+              </span>
+            </div>
+
+            {fileRouteSaveErrors.length > 0 ? (
+              <NoticeBlock
+                notice={{
+                  tone: "error",
+                  title: "File route validation",
+                  text: fileRouteSaveErrors.join(" "),
+                }}
+              />
+            ) : null}
+          </section>
+
+          <section
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: 8,
+              display: "grid",
               gap: 10,
               padding: 12,
             }}
@@ -1926,16 +2187,16 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             Reset
           </button>
           <button
-            disabled={routingLoading || routingSaving || !routingDirty}
+            disabled={routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0}
             onClick={() => {
               void handleSaveRoutingConfig();
             }}
             style={{
-              background: routingLoading || routingSaving || !routingDirty ? "#9ca3af" : "#111827",
+              background: routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0 ? "#9ca3af" : "#111827",
               border: 0,
               borderRadius: 8,
               color: "white",
-              cursor: routingLoading || routingSaving || !routingDirty ? "not-allowed" : "pointer",
+              cursor: routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0 ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 160,
               padding: "10px 14px",

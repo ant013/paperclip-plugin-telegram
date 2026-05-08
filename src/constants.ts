@@ -27,6 +27,13 @@ export const DEFAULT_CONFIG = {
   enableInbound: true,
   allowedTelegramUserIds: [] as string[],
   allowedTelegramChatIds: [] as string[],
+  fileRoutes: [] as Array<{
+    name: string;
+    enabled: boolean;
+    projectKey: string;
+    chatId: string;
+    topicId?: string;
+  }>,
   digestMode: "off" as "off" | "daily" | "bidaily" | "tridaily",
   dailyDigestTime: "09:00",
   bidailySecondTime: "17:00",
