@@ -4,10 +4,6 @@ import {
   usePluginData,
   type PluginSettingsPageProps,
 } from "@paperclipai/plugin-sdk/ui";
-import {
-  getTelegramFileRouteSaveErrors,
-  parseProjectKeyFromIssueIdentifier,
-} from "../file-routing.js";
 
 type BoardAccessRegistration = {
   configured: boolean;
@@ -126,6 +122,69 @@ type PluginConfigResponse = {
 } | null;
 
 const TELEGRAM_PLUGIN_ID = "paperclip-plugin-telegram";
+const UI_PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]*$/;
+const UI_ISSUE_IDENTIFIER_PATTERN = /^([A-Z][A-Z0-9]*)-\d+$/;
+const UI_CHAT_ID_PATTERN = /^-?\d+$/;
+const UI_TOPIC_ID_PATTERN = /^\d+$/;
+
+function parseProjectKeyFromIssueIdentifier(value: unknown): string | null {
+  const issueIdentifier = typeof value === "string" ? value.trim().toUpperCase() : "";
+  const match = UI_ISSUE_IDENTIFIER_PATTERN.exec(issueIdentifier);
+  return match?.[1] ?? null;
+}
+
+function getTelegramFileRouteSaveErrors(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return ["fileRoutes must be an array."];
+
+  const errors: string[] = [];
+  const enabledProjectKeys: string[] = [];
+  const enabledNames: string[] = [];
+
+  for (const [index, route] of value.entries()) {
+    if (typeof route !== "object" || route === null || Array.isArray(route)) {
+      errors.push("Enabled file routes must be objects.");
+      continue;
+    }
+
+    const record = route as Record<string, unknown>;
+    if (record.enabled === false) continue;
+
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    const projectKey = typeof record.projectKey === "string" ? record.projectKey.trim() : "";
+    const chatId = typeof record.chatId === "string" ? record.chatId.trim() : "";
+    const topicId = typeof record.topicId === "string" ? record.topicId.trim() : "";
+
+    if (!name) {
+      errors.push(`Route ${index + 1}: enabled file routes need a name.`);
+    } else {
+      enabledNames.push(name);
+    }
+    if (!UI_PROJECT_KEY_PATTERN.test(projectKey)) {
+      errors.push(`Route ${index + 1}: project key must use uppercase letters and numbers.`);
+    } else {
+      enabledProjectKeys.push(projectKey);
+    }
+    if (!UI_CHAT_ID_PATTERN.test(chatId)) {
+      errors.push(`Route ${index + 1}: enabled file routes need a numeric Telegram chat ID.`);
+    }
+    if (topicId && !UI_TOPIC_ID_PATTERN.test(topicId)) {
+      errors.push(`Route ${index + 1}: topic ID must be numeric when provided.`);
+    }
+  }
+
+  const duplicateProjectKeys = enabledProjectKeys.filter((key, index) => enabledProjectKeys.indexOf(key) !== index);
+  for (const projectKey of [...new Set(duplicateProjectKeys)]) {
+    errors.push(`Enabled file routes must not duplicate project key ${projectKey}.`);
+  }
+
+  const duplicateNames = enabledNames.filter((name, index) => enabledNames.indexOf(name) !== index);
+  for (const name of [...new Set(duplicateNames)]) {
+    errors.push(`Enabled file route names must be unique: ${name}.`);
+  }
+
+  return errors;
+}
 
 const DEFAULT_ROUTING_CONFIG: TelegramRoutingConfig = {
   defaultChatId: "",
