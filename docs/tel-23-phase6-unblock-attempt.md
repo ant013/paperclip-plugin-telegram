@@ -44,3 +44,24 @@ The implementation path was previously verified locally with:
 - `npm test -- tests/send-to-telegram.test.ts`: 46 passed
 - `npm test`: 276 passed, 4 skipped
 - `npm run build`: passed
+
+## Resume Check After Status Returned To In Progress
+
+Date: 2026-05-08
+Run: `b2aa2830-94fb-4f6b-ae64-9a85d8caf385` was followed by a status-change
+wake where TEL-23 was back in progress.
+
+The unblock condition still was not present in the resumed session:
+
+- `PAPERCLIP_BOARD_TOKEN`: missing
+- `PAPERCLIP_API_KEY`: placeholder form, not a usable board-capable token
+- Runtime action probe:
+  - `POST /api/plugins/60023916-4b6c-40f5-829f-bc8b98abc4ed/actions/send_to_telegram`
+  - Result: `403 {"error":"Board access required"}`
+- Attempted issue PATCH back to blocked with evidence:
+  - Result: `401 {"error":"Unauthorized"}`
+
+Result: Phase 6 production-safe smoke remains blocked from this session. The
+required next action is still for the runtime/operator to provide
+`PAPERCLIP_BOARD_TOKEN` or run the smoke matrix from a board-capable session,
+then hand back to TGQAEngineer for evidence review.
