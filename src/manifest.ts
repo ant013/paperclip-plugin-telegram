@@ -5,7 +5,7 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Telegram Bot",
+  displayName: "Telegram Bot (Gimle Fork)",
   description:
     "Bidirectional Telegram integration: push notifications, bot commands, escalation to humans, multi-agent sessions (native + ACP), media pipeline with transcription, custom workflow commands, and proactive suggestion watches.",
   author: "mvanhorn",
@@ -88,6 +88,18 @@ const manifest: PaperclipPluginManifestV1 = {
       name: "discuss_with_agent",
       displayName: "Discuss with Agent",
       description: "Start a back-and-forth conversation with another agent",
+      parametersSchema: { type: "object" },
+    },
+    {
+      name: "send_to_telegram",
+      displayName: "Send Telegram Message",
+      description: "Send text and Markdown content to a Telegram chat, with optional thread and caption routing.",
+      parametersSchema: { type: "object" },
+    },
+    {
+      name: "send_file_to_telegram",
+      displayName: "Send File to Telegram",
+      description: "Deprecated compatibility alias for send_to_telegram.",
       parametersSchema: { type: "object" },
     },
     {

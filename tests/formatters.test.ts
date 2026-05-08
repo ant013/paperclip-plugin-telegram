@@ -28,6 +28,15 @@ describe("formatIssueCreated", () => {
     expect(msg.text).toContain("Test issue");
   });
 
+  it("uses inline issue link text without a dedicated issue button", () => {
+    const msg = formatIssueCreated(mockEvent(), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.options.inlineKeyboard).toBeUndefined();
+    expect(msg.text).toContain("[PROJ\\-42](https://paperclip.example/companies/abc/issues/PROJ-42)");
+  });
+
   it("falls back to entityId when no identifier", () => {
     const msg = formatIssueCreated(mockEvent({ identifier: undefined }));
     expect(msg.text).toContain("iss\\-123");
@@ -63,6 +72,13 @@ describe("formatIssueCreated", () => {
     expect(msg.text.length).toBeLessThan(words.length * 2);
   });
 
+  it("limits issue description preview to two lines", () => {
+    const longDescription = Array(100).fill("word").join(" ");
+    const msg = formatIssueCreated(mockEvent({ description: longDescription }));
+    const previewLines = msg.text.split("\n").filter((line) => line.includes("\\>"));
+    expect(previewLines.length).toBeLessThanOrEqual(2);
+  });
+
   it("omits metadata line when no metadata", () => {
     const msg = formatIssueCreated(mockEvent({
       status: undefined,
@@ -95,6 +111,13 @@ describe("formatIssueDone", () => {
     const longComment = Array(80).fill("word").join(" ");
     const msg = formatIssueDone(mockEvent({ comment: longComment }));
     expect(msg.text).toContain("\\.\\.\\.");
+  });
+
+  it("limits issue completion preview to two lines", () => {
+    const longComment = Array(100).fill("word").join(" ");
+    const msg = formatIssueDone(mockEvent({ comment: longComment }));
+    const previewLines = msg.text.split("\n").filter((line) => line.includes("\\>"));
+    expect(previewLines.length).toBeLessThanOrEqual(2);
   });
 
   it("omits comment section when no comment", () => {
@@ -180,6 +203,28 @@ describe("formatApprovalCreated", () => {
     expect(msg.text).toContain("Builder");
   });
 
+  it("uses displayName as agent label fallback", () => {
+    const msg = formatApprovalCreated(mockEvent({
+      displayName: "Release Captain",
+      type: "deploy",
+    }));
+    expect(msg.text).toContain("Release Captain");
+  });
+
+  it("keeps only approval action buttons when linked issues exist", () => {
+    const msg = formatApprovalCreated(mockEvent({
+      linkedIssues: [{ identifier: "ISS-1", title: "First", status: "open" }],
+    }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.options.inlineKeyboard).toBeDefined();
+    expect(msg.options.inlineKeyboard![0]).toHaveLength(2);
+    expect(msg.options.inlineKeyboard![0][0].text).toBe("Approve");
+    expect(msg.options.inlineKeyboard![0][1].text).toBe("Reject");
+    expect(msg.text).toContain("[ISS\\-1](https://paperclip.example/companies/abc/issues/ISS-1)");
+  });
+
   it("includes linked issues", () => {
     const msg = formatApprovalCreated(mockEvent({
       linkedIssues: [
@@ -209,6 +254,58 @@ describe("formatAgentError", () => {
     expect(msg.text).toContain("Connection refused");
   });
 
+  it("uses displayName before raw ids for errors", () => {
+    const msg = formatAgentError(mockEvent({
+      displayName: "Ops Watch",
+      error: "Connection refused",
+    }));
+    expect(msg.text).toContain("Ops Watch");
+  });
+
+  it("prefers issue context over run link for issue-backed errors", () => {
+    const msg = formatAgentError(mockEvent({
+      agentName: "Builder",
+      runId: "run-1",
+      issueIdentifier: "ISS-1",
+      issueTitle: "Issue one",
+      companyName: "Acme",
+      error: "Connection refused",
+      agentId: "agent-1",
+    }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.options.inlineKeyboard).toBeUndefined();
+    expect(msg.text).toContain("Builder");
+    expect(msg.text).toContain("failed\n[ISS\\-1](https://paperclip.example/companies/abc/issues/ISS-1) — Issue one");
+    expect(msg.text).not.toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
+  });
+
+  it("keeps run link fallback for errors without issue context", () => {
+    const msg = formatAgentError(mockEvent({
+      runId: "run-1",
+      error: "Connection refused",
+      agentId: "agent-1",
+    }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.text).toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
+  });
+
+  it("renders issue link inline without action buttons", () => {
+    const msg = formatAgentError(mockEvent({
+      issueIdentifier: "ISS-1",
+      issueTitle: "Issue one",
+      error: "Connection refused",
+    }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.options.inlineKeyboard).toBeUndefined();
+    expect(msg.text).toContain("[ISS\\-1](https://paperclip.example/companies/abc/issues/ISS-1)");
+  });
+
   it("truncates long error messages", () => {
     const longError = "x".repeat(600);
     const msg = formatAgentError(mockEvent({ error: longError }));
@@ -229,6 +326,49 @@ describe("formatAgentRunStarted", () => {
     expect(msg.text).toContain("started");
   });
 
+  it("uses displayName as run-start label fallback", () => {
+    const msg = formatAgentRunStarted(mockEvent({ displayName: "Ship Bot" }));
+    expect(msg.text).toContain("Ship Bot");
+  });
+
+  it("falls back to run link when issue context is not available", () => {
+    const msg = formatAgentRunStarted(mockEvent({ agentName: "Deployer", runId: "run-1", agentId: "agent-1" }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.text).toContain("Deployer");
+    expect(msg.text).toContain("started / [Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
+    expect(msg.text.split("\n")).toHaveLength(1);
+  });
+
+  it("keeps fallback single-line when no run link is available", () => {
+    const msg = formatAgentRunStarted(mockEvent({ agentName: "Deployer" }));
+    expect(msg.text).toContain("▶️ *Deployer* started");
+    expect(msg.text.split("\n")).toHaveLength(1);
+    expect(msg.text).not.toContain("Run:");
+  });
+
+  it("uses linked issue context as fallback and escapes/truncates title", () => {
+    const msg = formatAgentRunStarted(mockEvent({
+      agentName: "TGCTO",
+      runId: "run-1",
+      agentId: "agent-1",
+      issueIdentifier: "TEL_17",
+      issueTitle:
+        "This markdown heavy title includes *asterisks*, _underscores_, [brackets], and an intentionally long tail that must be cut for preview safety.",
+    }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.text).toContain("TGCTO");
+    expect(msg.text).toContain("started\n[TEL\\_17](https://paperclip.example/companies/abc/issues/TEL_17) —");
+    expect(msg.text).toContain("This markdown heavy title includes \\*asterisks\\*");
+    expect(msg.text).toContain("\\.\\.\\.");
+    expect(msg.text).not.toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
+    expect(msg.text).not.toContain("intentionally long tail");
+    expect(msg.text.split("\n")).toHaveLength(2);
+  });
+
   it("disables notification", () => {
     const msg = formatAgentRunStarted(mockEvent());
     expect(msg.options.disableNotification).toBe(true);
@@ -240,6 +380,49 @@ describe("formatAgentRunFinished", () => {
     const msg = formatAgentRunFinished(mockEvent({ agentName: "Deployer" }));
     expect(msg.text).toContain("Deployer");
     expect(msg.text).toContain("completed");
+  });
+
+  it("uses displayName as run-finished label fallback", () => {
+    const msg = formatAgentRunFinished(mockEvent({ displayName: "Ship Bot" }));
+    expect(msg.text).toContain("Ship Bot");
+  });
+
+  it("falls back to run link when issue context is not available", () => {
+    const msg = formatAgentRunFinished(mockEvent({ agentName: "Deployer", runId: "run-1", agentId: "agent-1" }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.text).toContain("Deployer");
+    expect(msg.text).toContain("completed / [Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
+    expect(msg.text.split("\n")).toHaveLength(1);
+  });
+
+  it("keeps fallback single-line when no run link is available", () => {
+    const msg = formatAgentRunFinished(mockEvent({ agentName: "Deployer" }));
+    expect(msg.text).toContain("⏹️ *Deployer* completed");
+    expect(msg.text.split("\n")).toHaveLength(1);
+    expect(msg.text).not.toContain("Run:");
+  });
+
+  it("uses linked issue context as fallback and escapes/truncates title", () => {
+    const msg = formatAgentRunFinished(mockEvent({
+      agentName: "TGCTO",
+      runId: "run-1",
+      agentId: "agent-1",
+      issueIdentifier: "TEL_17",
+      issueTitle:
+        "This markdown heavy title includes *asterisks*, _underscores_, [brackets], and an intentionally long tail that must be cut for preview safety.",
+    }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.text).toContain("TGCTO");
+    expect(msg.text).toContain("completed\n[TEL\\_17](https://paperclip.example/companies/abc/issues/TEL_17) —");
+    expect(msg.text).toContain("This markdown heavy title includes \\*asterisks\\*");
+    expect(msg.text).toContain("\\.\\.\\.");
+    expect(msg.text).not.toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
+    expect(msg.text).not.toContain("intentionally long tail");
+    expect(msg.text.split("\n")).toHaveLength(2);
   });
 
   it("disables notification", () => {

@@ -8,6 +8,7 @@ import {
   ACP_SPAWN_EVENT,
   ACP_OUTPUT_EVENT,
 } from "./constants.js";
+import { resolveAgentByName } from "./agent-labels.js";
 
 // --- Types ---
 
@@ -52,6 +53,7 @@ type PendingHandoff = {
   sourceSessionId: string;
   sourceAgent: string;
   targetAgent: string;
+  targetAgentDisplayName?: string;
   reason: string;
   contextSummary: string;
   chatId: string;
@@ -121,53 +123,6 @@ export async function handleAcpCommand(
         ].join("\n"),
         { parseMode: "MarkdownV2", messageThreadId },
       );
-  }
-}
-
-// --- Agent name resolution ---
-
-/**
- * Resolve an agent by name/urlKey (case-insensitive).
- * The plugin SDK's `agents.get()` requires a UUID, so we list all agents
- * and match by name or urlKey.
- *
- * The SDK may return the agent UUID in `id`, `agentId`, or `_id` depending
- * on the Paperclip version.  We pick the first field that looks like a UUID
- * and fall back to `id` if none do (caller will get a clear error on create).
- */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-async function resolveAgentByName(
-  ctx: PluginContext,
-  name: string,
-  companyId: string,
-): Promise<{ id: string; name: string } | null> {
-  try {
-    const allAgents = await ctx.agents.list({ companyId });
-    const lower = name.toLowerCase();
-    const match = (allAgents as any[]).find(
-      (a: any) =>
-        a.name?.toLowerCase() === lower ||
-        a.urlKey?.toLowerCase() === lower,
-    );
-    if (!match) return null;
-
-    // Find the UUID — different SDK versions may use different field names
-    const candidateId = match.agentId ?? match._id ?? match.id;
-    const resolvedId = UUID_RE.test(String(candidateId)) ? String(candidateId) : String(match.id);
-
-    ctx.logger.info("Resolved agent by name", {
-      agentName: name,
-      resolvedId,
-      rawId: match.id,
-      rawAgentId: match.agentId,
-      hasUrlKey: !!match.urlKey,
-    });
-
-    return { id: resolvedId, name: match.name };
-  } catch (err) {
-    ctx.logger.error("Failed to resolve agent by name", { agentName: name, companyId, error: String(err) });
-    return null;
   }
 }
 
@@ -266,18 +221,19 @@ async function handleAcpSpawn(
   await sendChatAction(ctx, token, chatId);
 
   const trimmedName = agentName.trim();
-  const displayName = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
 
   // Try native session first: resolve agent by name, then create session
   let transport: "native" | "acp" = "acp";
   let sessionId: string;
   let agentId = "";
+  let displayName = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
 
   const resolved = await resolveAgentByName(ctx, trimmedName, resolvedCompanyId);
   if (resolved) {
     try {
       agentId = resolved.id;
+      displayName = resolved.name;
       const session = await ctx.agents.sessions.create(agentId, resolvedCompanyId, {
         reason: `Telegram thread ${chatId}/${messageThreadId}`,
       });
@@ -896,11 +852,13 @@ export async function handleHandoffToolCall(
   const sessions = await getSessions(ctx, chatId, threadId);
   const sourceSession = sessions.find((s) => s.agentId === sourceAgentId);
   const sourceAgent = sourceSession?.agentDisplayName ?? "Agent";
+  const resolvedTarget = await resolveAgentByName(ctx, targetAgent, companyId);
+  const targetAgentDisplayName = resolvedTarget?.name ?? targetAgent;
 
   const handoffId = `handoff_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   const handoffText = [
-    `${escapeMarkdownV2("\ud83d\udd04")} *\\[${escapeMarkdownV2(sourceAgent)}\\]* ${escapeMarkdownV2("Handing off to")} *${escapeMarkdownV2(targetAgent)}*`,
+    `${escapeMarkdownV2("\ud83d\udd04")} *\\[${escapeMarkdownV2(sourceAgent)}\\]* ${escapeMarkdownV2("Handing off to")} *${escapeMarkdownV2(targetAgentDisplayName)}*`,
     "",
     `${escapeMarkdownV2("Reason:")} ${escapeMarkdownV2(reason)}`,
   ].join("\n");
@@ -922,6 +880,7 @@ export async function handleHandoffToolCall(
       sourceSessionId: sourceSession?.sessionId ?? "",
       sourceAgent,
       targetAgent,
+      targetAgentDisplayName,
       reason,
       contextSummary,
       chatId,
@@ -994,7 +953,7 @@ export async function handleHandoffRejection(
     ctx,
     token,
     pending.chatId,
-    `${escapeMarkdownV2("\u274c")} Handoff to *${escapeMarkdownV2(pending.targetAgent)}* rejected by ${escapeMarkdownV2(actor)}`,
+    `${escapeMarkdownV2("\u274c")} Handoff to *${escapeMarkdownV2(pending.targetAgentDisplayName ?? pending.targetAgent)}* rejected by ${escapeMarkdownV2(actor)}`,
     { parseMode: "MarkdownV2", messageThreadId: pending.threadId },
   );
 
@@ -1027,11 +986,13 @@ async function executeHandoff(
     let transport: "native" | "acp" = "acp";
     let sessionId: string;
     let agentId = "";
+    let displayName = targetAgent.charAt(0).toUpperCase() + targetAgent.slice(1);
 
     const resolved = await resolveAgentByName(ctx, targetAgent, companyId);
     if (resolved) {
       try {
         agentId = resolved.id;
+        displayName = resolved.name;
         const session = await ctx.agents.sessions.create(agentId, companyId, {
           reason: `Handoff from Telegram thread ${chatId}/${threadId}`,
         });
@@ -1047,7 +1008,6 @@ async function executeHandoff(
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
-    const displayName = targetAgent.charAt(0).toUpperCase() + targetAgent.slice(1);
     const now = new Date().toISOString();
 
     targetSession = {
@@ -1138,11 +1098,13 @@ export async function handleDiscussToolCall(
     let transport: "native" | "acp" = "acp";
     let sessionId: string;
     let agentId = "";
+    let displayName = targetAgent.charAt(0).toUpperCase() + targetAgent.slice(1);
 
     const resolved = await resolveAgentByName(ctx, targetAgent, companyId);
     if (resolved) {
       try {
         agentId = resolved.id;
+        displayName = resolved.name;
         const session = await ctx.agents.sessions.create(agentId, companyId, {
           reason: `Discussion from Telegram thread ${chatId}/${threadId}`,
         });
@@ -1158,7 +1120,6 @@ export async function handleDiscussToolCall(
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
-    const displayName = targetAgent.charAt(0).toUpperCase() + targetAgent.slice(1);
     const now = new Date().toISOString();
 
     targetSession = {
