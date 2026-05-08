@@ -76,6 +76,117 @@ type StepResult = {
   data?: unknown;
 };
 
+type StepResultSnapshot = Pick<StepResult, "stepId" | "result">;
+
+type CommandResumeState = {
+  status: "pending" | "approved" | "rejected";
+  command: CustomCommand;
+  args: string[];
+  results: StepResultSnapshot[];
+  nextStepIndex: number;
+  chatId: string;
+  messageThreadId?: number;
+  companyId: string;
+  createdAt: number;
+  resolvedBy?: string;
+  resolvedAt?: number;
+};
+
+const AWAITING_APPROVAL_RESULT = "awaiting_approval";
+
+function isCommandResumeState(value: unknown): value is CommandResumeState {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.status !== "pending" && record.status !== "approved" && record.status !== "rejected") return false;
+  if (!Array.isArray(record.args) || !Array.isArray(record.results)) return false;
+  if (typeof record.nextStepIndex !== "number" || typeof record.chatId !== "string" || typeof record.companyId !== "string") return false;
+  if (!record.command || !Array.isArray((record.command as Record<string, unknown>).steps)) return false;
+  return true;
+}
+
+export async function handleCustomCommandApprovalCallback(
+  ctx: PluginContext,
+  token: string,
+  approvalId: string,
+  action: "approve" | "reject",
+  actor: string,
+): Promise<"handled" | "already" | "missing" | "error"> {
+  const stateKey = `cmd_approval_${approvalId}`;
+  const rawState = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey,
+  });
+
+  if (!rawState || typeof rawState !== "object") {
+    return "missing";
+  }
+
+  if (!isCommandResumeState(rawState)) {
+    return "error";
+  }
+
+  const state = rawState;
+  if (state.status !== "pending") {
+    return state.status === "approved" || state.status === "rejected" ? "already" : "error";
+  }
+
+  if (action === "reject") {
+    await ctx.state.set(
+      { scopeKind: "instance", stateKey },
+      {
+        ...state,
+        status: "rejected",
+        resolvedBy: actor,
+        resolvedAt: Date.now(),
+      },
+    );
+    return "handled";
+  }
+
+  const approvedState: CommandResumeState = {
+    ...state,
+    status: "approved",
+    resolvedBy: actor,
+    resolvedAt: Date.now(),
+  };
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey },
+    approvedState,
+  );
+
+  try {
+    await executeWorkflow(
+      ctx,
+      token,
+      state.chatId,
+      state.command,
+      state.args,
+      state.messageThreadId,
+      state.companyId,
+      state.results,
+      state.nextStepIndex,
+      false,
+    );
+    return "handled";
+  } catch (err) {
+    ctx.logger.error("Failed to resume custom command", {
+      approvalId,
+      command: state.command.name,
+      error: String(err),
+    });
+    await ctx.state.set(
+      { scopeKind: "instance", stateKey },
+      {
+        ...approvedState,
+        status: "pending",
+        resolvedBy: undefined,
+        resolvedAt: undefined,
+      },
+    );
+    return "error";
+  }
+}
+
 // --- Built-in commands ---
 
 const BUILTIN_COMMANDS = new Set([
@@ -313,15 +424,37 @@ async function executeWorkflow(
   args: string[],
   messageThreadId: number | undefined,
   companyId: string,
+  seededResults: StepResultSnapshot[] = [],
+  startAtStepIndex = 0,
+  countCommandMetric = true,
 ): Promise<void> {
   await sendChatAction(ctx, token, chatId);
-  await ctx.metrics.write(METRIC_NAMES.commandsExecuted, 1);
+  if (countCommandMetric) {
+    await ctx.metrics.write(METRIC_NAMES.commandsExecuted, 1);
+  }
 
-  const results: StepResult[] = [];
+  const results: StepResult[] = [...seededResults];
 
-  for (const step of cmd.steps) {
+  for (let stepIndex = startAtStepIndex; stepIndex < cmd.steps.length; stepIndex += 1) {
+    const step = cmd.steps[stepIndex];
+    if (!step) continue;
     try {
-      const result = await executeStep(ctx, token, chatId, step, args, results, messageThreadId, companyId);
+      const result = await executeStep(
+        ctx,
+        token,
+        chatId,
+        step,
+        args,
+        results,
+        messageThreadId,
+        companyId,
+        cmd,
+        stepIndex,
+      );
+      if (result === "awaiting_approval") {
+        results.push({ stepId: step.id, result });
+        return;
+      }
       results.push({ stepId: step.id, result: result ?? "" });
     } catch (err) {
       ctx.logger.error("Workflow step failed", { command: cmd.name, stepId: step.id, error: String(err) });
@@ -348,6 +481,8 @@ async function executeStep(
   prevResults: StepResult[],
   messageThreadId: number | undefined,
   companyId: string,
+  cmd: CustomCommand,
+  stepIndex: number,
 ): Promise<string | null> {
   const interpolate = (template: string): string => {
     let result = template;
@@ -422,7 +557,8 @@ async function executeStep(
 
     case "wait_approval": {
       const prompt = interpolate(step.prompt);
-      const approvalId = `cmd_approval_${Date.now()}`;
+      const approvalId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const stepResult = AWAITING_APPROVAL_RESULT;
       await sendMessage(ctx, token, chatId, prompt, {
         messageThreadId,
         inlineKeyboard: [
@@ -435,9 +571,22 @@ async function executeStep(
       // Store approval state - workflow will be continued by callback handler
       await ctx.state.set(
         { scopeKind: "instance", stateKey: `cmd_approval_${approvalId}` },
-        { status: "pending", createdAt: Date.now() },
+        {
+          status: "pending",
+          command: cmd,
+          args,
+          results: [
+            ...prevResults.map((result) => ({ stepId: result.stepId, result: result.result })),
+            { stepId: step.id, result: stepResult },
+          ],
+          nextStepIndex: stepIndex + 1,
+          chatId,
+          messageThreadId,
+          companyId,
+          createdAt: Date.now(),
+        },
       );
-      return "awaiting_approval";
+      return stepResult;
     }
 
     case "set_state": {

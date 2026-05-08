@@ -47,7 +47,7 @@ function issueTaskContext(
   opts?: IssueLinksOpts,
 ): string | null {
   if (!issueIdentifier) return null;
-  const title = issueTitle ? ` ${esc(truncateAtWord(issueTitle, 50))}` : "";
+  const title = issueTitle ? ` — ${esc(truncateAtWord(issueTitle, 50))}` : "";
   return `${issueLink(issueIdentifier, opts)}${title}`;
 }
 
@@ -57,7 +57,7 @@ function issueTaskRunContext(
   opts?: IssueLinksOpts,
 ): string | null {
   if (!issueIdentifier) return null;
-  const title = issueTitle ? ` ${esc(truncateAtWord(issueTitle, 50))}` : "";
+  const title = issueTitle ? ` — ${esc(truncateAtWord(issueTitle, 50))}` : "";
   return `${issueLink(issueIdentifier, opts)}${title}`;
 }
 
