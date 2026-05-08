@@ -35,31 +35,47 @@ function issueLink(identifier: string, opts?: IssueLinksOpts): string {
   return bold(identifier);
 }
 
-function issueButton(identifier: string, opts?: IssueLinksOpts): { text: string; url: string } | null {
-  if (opts?.baseUrl && opts?.issuePrefix && isExternalUrl(opts.baseUrl)) {
-    return { text: `Open ${identifier} ↗`, url: `${opts.baseUrl}/${opts.issuePrefix}/issues/${identifier}` };
-  }
-  return null;
-}
-
-function agentButton(agentId: string, label: string, publicUrl?: string): { text: string; url: string } | null {
-  if (publicUrl && isExternalUrl(publicUrl)) {
-    return { text: label, url: `${publicUrl}/agents/${agentId}` };
-  }
-  return null;
-}
-
-function runButton(agentId: string, runId: string | null, publicUrl?: string): { text: string; url: string } | null {
-  if (publicUrl && isExternalUrl(publicUrl) && runId) {
-    return { text: "View Run ↗", url: `${publicUrl}/agents/${agentId}/runs/${runId}` };
-  }
-  return null;
-}
-
 function runLinkLine(agentId: string, runId: string | null, publicUrl?: string): string | null {
   if (!runId) return null;
   if (!publicUrl || !isExternalUrl(publicUrl)) return `Run: ${code(runId)}`;
   return `[${esc("Run")} ${esc(runId)}](${publicUrl}/agents/${agentId}/runs/${runId})`;
+}
+
+function issueTaskContext(
+  issueIdentifier: string | null,
+  issueTitle: string | null,
+  opts?: IssueLinksOpts,
+): string | null {
+  if (!issueIdentifier) return null;
+  const title = issueTitle ? ` ${esc(truncateAtWord(issueTitle, 50))}` : "";
+  return `${issueLink(issueIdentifier, opts)}${title}`;
+}
+
+function issueTaskRunContext(
+  issueIdentifier: string | null,
+  issueTitle: string | null,
+  opts?: IssueLinksOpts,
+): string | null {
+  if (!issueIdentifier) return null;
+  const title = issueTitle ? ` ${esc(truncateAtWord(issueTitle, 50))}` : "";
+  return `${issueLink(issueIdentifier, opts)}${title}`;
+}
+
+function issuePreviewLines(text: string, maxLineLength = 120): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  const budget = Math.max(1, maxLineLength);
+  const preview = truncateAtWord(normalized, budget * 2);
+  if (preview.length <= budget) return [preview];
+
+  const splitAt = preview.lastIndexOf(" ", budget);
+  const firstLine = splitAt > budget * 0.35
+    ? preview.slice(0, splitAt)
+    : preview.slice(0, budget);
+  const secondLine = truncateAtWord(preview.slice(firstLine.length).trim(), budget);
+
+  return secondLine ? [firstLine, secondLine] : [firstLine];
 }
 
 function classifyAgentError(errorMessage: string): string {
@@ -90,16 +106,17 @@ export function formatIssueCreated(event: PluginEvent, opts?: IssueLinksOpts): F
   if (meta.length > 0) lines.push(meta.join(" \\| "));
 
   if (p.description) {
-    const desc = truncateAtWord(String(p.description), 200);
-    lines.push(`\n${esc(">")} ${esc(desc)}`);
+    const description = issuePreviewLines(String(p.description));
+    lines.push(`\n${esc(">")} ${esc(description[0] ?? "")}`);
+    for (const line of description.slice(1)) {
+      lines.push(`${esc(">")} ${esc(line)}`);
+    }
   }
 
-  const button = issueButton(identifier, opts);
   return {
     text: lines.join("\n"),
     options: {
       parseMode: "MarkdownV2",
-      ...(button ? { inlineKeyboard: [[button]] } : {}),
     },
   };
 }
@@ -127,12 +144,10 @@ export function formatIssueAssigned(event: PluginEvent, opts?: IssueLinksOpts): 
     lines.push(esc("Unassigned"));
   }
 
-  const button = issueButton(identifier, opts);
   return {
     text: lines.join("\n"),
     options: {
       parseMode: "MarkdownV2",
-      ...(button ? { inlineKeyboard: [[button]] } : {}),
     },
   };
 }
@@ -149,16 +164,17 @@ export function formatIssueDone(event: PluginEvent, opts?: IssueLinksOpts): Form
   ];
 
   if (comment) {
-    const truncated = truncateAtWord(comment, 300);
-    lines.push(`\n${esc(">")} ${esc(truncated)}`);
+    const preview = issuePreviewLines(comment);
+    lines.push(`\n${esc(">")} ${esc(preview[0] ?? "")}`);
+    for (const line of preview.slice(1)) {
+      lines.push(`${esc(">")} ${esc(line)}`);
+    }
   }
 
-  const button = issueButton(identifier, opts);
   return {
     text: lines.join("\n"),
     options: {
       parseMode: "MarkdownV2",
-      ...(button ? { inlineKeyboard: [[button]] } : {}),
     },
   };
 }
@@ -202,15 +218,6 @@ export function formatApprovalCreated(event: PluginEvent, opts?: IssueLinksOpts)
     ],
   ];
 
-  // Add deep link to the first linked issue if available
-  if (linkedIssues.length > 0) {
-    const firstIssueId = String(linkedIssues[0]!.identifier ?? "");
-    if (firstIssueId) {
-      const btn = issueButton(firstIssueId, opts);
-      if (btn) keyboard.push([btn]);
-    }
-  }
-
   return {
     text: lines.join("\n"),
     options: {
@@ -229,32 +236,27 @@ export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): For
   const companyName = p.companyName ? String(p.companyName) : null;
   const issueIdentifier = p.issueIdentifier ? String(p.issueIdentifier) : null;
   const issueTitle = p.issueTitle ? String(p.issueTitle) : null;
+  const issueContext = issueTaskContext(issueIdentifier, issueTitle, opts);
 
   const lines: string[] = [
     `${esc("❌")} ${bold(classifyAgentError(errorMessage))}`,
-    `Agent: ${bold(agentName)}`,
   ];
-  if (companyName) lines.push(`Company: ${esc(companyName)}`);
-  if (issueIdentifier) {
-    lines.push(
-      issueTitle
-        ? `Issue: ${issueLink(issueIdentifier, opts)} ${esc("—")} ${esc(issueTitle)}`
-        : `Issue: ${issueLink(issueIdentifier, opts)}`,
-    );
+  if (issueContext) {
+    lines.push(`${bold(agentName)} ${esc("failed")} / ${issueContext}`);
+  } else {
+    lines.push(`Agent: ${bold(agentName)}`);
+    const runLink = runLinkLine(agentId, runId, opts?.baseUrl);
+    if (runLink) {
+      lines.push(runLink);
+    }
   }
+  if (companyName) lines.push(`Company: ${esc(companyName)}`);
   lines.push(`\n${code(truncateAtWord(errorMessage, 500))}`);
-
-  const buttons = [
-    runButton(agentId, runId, opts?.baseUrl),
-    issueIdentifier ? issueButton(issueIdentifier, opts) : null,
-    agentButton(agentId, "View Agent ↗", opts?.baseUrl),
-  ].filter((button): button is { text: string; url: string } => Boolean(button));
 
   return {
     text: lines.join("\n"),
     options: {
       parseMode: "MarkdownV2",
-      ...(buttons.length > 0 ? { inlineKeyboard: [buttons] } : {}),
     },
   };
 }
@@ -264,12 +266,14 @@ export function formatAgentRunStarted(event: PluginEvent, opts?: IssueLinksOpts)
   const agentId = String(p.agentId ?? event.entityId);
   const agentName = String(p.agentName ?? p.displayName ?? p.name ?? agentId);
   const runId = p.runId ? String(p.runId) : null;
+  const issueIdentifier = p.issueIdentifier ? String(p.issueIdentifier) : null;
+  const issueTitle = p.issueTitle ? String(p.issueTitle) : null;
+  const issueContext = issueTaskRunContext(issueIdentifier, issueTitle, opts);
+  const fallbackContext = issueContext ?? runLinkLine(agentId, runId, opts?.baseUrl);
 
-  const lines = [`${esc("▶️")} ${bold(agentName)} ${esc("started a new run")}`];
-  const runLink = runLinkLine(agentId, runId, opts?.baseUrl);
-  if (runLink) {
-    lines.push(runLink);
-  }
+  const lines: string[] = [
+    `${esc("▶️")} ${bold(agentName)} ${esc("started")}${fallbackContext ? ` / ${fallbackContext}` : ""}`,
+  ];
 
   return {
     text: lines.join("\n"),
@@ -285,12 +289,14 @@ export function formatAgentRunFinished(event: PluginEvent, opts?: IssueLinksOpts
   const agentId = String(p.agentId ?? event.entityId);
   const agentName = String(p.agentName ?? p.displayName ?? p.name ?? agentId);
   const runId = p.runId ? String(p.runId) : null;
+  const issueIdentifier = p.issueIdentifier ? String(p.issueIdentifier) : null;
+  const issueTitle = p.issueTitle ? String(p.issueTitle) : null;
+  const issueContext = issueTaskRunContext(issueIdentifier, issueTitle, opts);
+  const fallbackContext = issueContext ?? runLinkLine(agentId, runId, opts?.baseUrl);
 
-  const lines = [`${esc("⏹️")} ${bold(agentName)} ${esc("completed successfully")}`];
-  const runLink = runLinkLine(agentId, runId, opts?.baseUrl);
-  if (runLink) {
-    lines.push(runLink);
-  }
+  const lines: string[] = [
+    `${esc("⏹️")} ${bold(agentName)} ${esc("completed")}${fallbackContext ? ` / ${fallbackContext}` : ""}`,
+  ];
 
   return {
     text: lines.join("\n"),

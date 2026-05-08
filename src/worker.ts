@@ -280,6 +280,21 @@ function normalizeAgentErrorMessage(input: unknown): string {
     .slice(0, 500);
 }
 
+async function enrichRunIssueContext(ctx: PluginContext, event: PluginEvent): Promise<void> {
+  const payload = event.payload as Record<string, unknown>;
+  if (!payload.issueId || (payload.issueIdentifier && payload.issueTitle)) return;
+
+  try {
+    const issue = await ctx.issues.get(String(payload.issueId), event.companyId);
+    if (issue) {
+      payload.issueIdentifier ??= issue.identifier;
+      payload.issueTitle ??= issue.title;
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
 async function resolveChat(
   ctx: PluginContext,
   companyId: string,
@@ -670,15 +685,7 @@ const plugin = definePlugin({
             if (company?.name) payload.companyName = company.name;
           } catch { /* best effort */ }
         }
-        if (payload.issueId && (!payload.issueIdentifier || !payload.issueTitle)) {
-          try {
-            const issue = await ctx.issues.get(String(payload.issueId), event.companyId);
-            if (issue) {
-              payload.issueIdentifier ??= issue.identifier;
-              payload.issueTitle ??= issue.title;
-            }
-          } catch { /* best effort */ }
-        }
+        await enrichRunIssueContext(ctx, event);
         const errorMessage = normalizeAgentErrorMessage(payload.error ?? payload.message);
         const dedupeKey = ["agent.run.failed", event.companyId, agentId, errorMessage].join(":");
         if (!agentErrorDedupe(dedupeKey)) return;
@@ -689,12 +696,14 @@ const plugin = definePlugin({
     if (config.notifyOnAgentRunStarted) {
       ctx.events.on("agent.run.started", async (event: PluginEvent) => {
         await enrichAgentName(event, { fallbackToEntityId: true });
+        await enrichRunIssueContext(ctx, event);
         await notify(event, formatAgentRunStarted);
       });
     }
     if (config.notifyOnAgentRunFinished) {
       ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
         await enrichAgentName(event, { fallbackToEntityId: true });
+        await enrichRunIssueContext(ctx, event);
         await notify(event, formatAgentRunFinished);
       });
     }
