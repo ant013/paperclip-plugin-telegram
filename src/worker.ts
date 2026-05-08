@@ -403,6 +403,17 @@ async function resolveChat(
   return (override as string) ?? fallback ?? null;
 }
 
+export async function resolveNotificationChatId(
+  ctx: PluginContext,
+  companyId: string,
+  fallback: string,
+  overrideChatId?: string,
+): Promise<string | null> {
+  const explicitChatId = overrideChatId?.trim();
+  if (explicitChatId) return explicitChatId;
+  return resolveChat(ctx, companyId, fallback);
+}
+
 function parseTopicId(value?: string): number | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -893,11 +904,12 @@ export const plugin = definePlugin({
       overrideChatId?: string,
       overrideTopicId?: string,
     ) => {
-      const chatId = overrideChatId || (await resolveChat(
+      const chatId = await resolveNotificationChatId(
         ctx,
         event.companyId,
         config.defaultChatId,
-      ));
+        overrideChatId,
+      );
       if (!chatId) return;
       const linksOpts = await resolveIssueLinksOpts(event.companyId);
       const msg = formatter(event, linksOpts);

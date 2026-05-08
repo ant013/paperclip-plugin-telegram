@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import * as telegramApi from "../src/telegram-api.js";
-import { resolveTelegramOpsDestination, sendToTelegramTool } from "../src/worker.js";
+import { resolveNotificationChatId, resolveTelegramOpsDestination, sendToTelegramTool } from "../src/worker.js";
 
 function stateKey(key: { scopeKind: string; scopeId?: string; stateKey: string }): string {
   return `${key.scopeKind}:${key.scopeId ?? ""}:${key.stateKey}`;
@@ -715,6 +715,30 @@ describe("sendToTelegramTool", () => {
     expect(sentText).toBe(markdownContent);
     expect(requestBody.get("chat_id")).toBe("-1001");
     expect(requestBody.get("caption")).toBe("Smoke test output");
+  });
+});
+
+describe("resolveNotificationChatId", () => {
+  beforeEach(() => {
+    stateStore = {};
+  });
+
+  it("honors explicit notification chat routes before company mappings", async () => {
+    stateStore[stateKey({ scopeKind: "company", scopeId: "company-1", stateKey: "telegram-chat" })] = "-main";
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+
+    const chatId = await resolveNotificationChatId(ctx, "company-1", "-default", "-ops");
+
+    expect(chatId).toBe("-ops");
+  });
+
+  it("falls back to company mapping when no explicit route is configured", async () => {
+    stateStore[stateKey({ scopeKind: "company", scopeId: "company-1", stateKey: "telegram-chat" })] = "-main";
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+
+    const chatId = await resolveNotificationChatId(ctx, "company-1", "-default");
+
+    expect(chatId).toBe("-main");
   });
 });
 
