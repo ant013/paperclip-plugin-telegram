@@ -894,11 +894,11 @@ export const plugin = definePlugin({
       overrideChatId?: string,
       overrideTopicId?: string,
     ) => {
-      const chatId = await resolveChat(
+      const chatId = overrideChatId || (await resolveChat(
         ctx,
         event.companyId,
-        overrideChatId || config.defaultChatId,
-      );
+        config.defaultChatId,
+      ));
       if (!chatId) return;
       const linksOpts = await resolveIssueLinksOpts(event.companyId);
       const msg = formatter(event, linksOpts);
