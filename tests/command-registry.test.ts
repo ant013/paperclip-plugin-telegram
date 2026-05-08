@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleCommandsCommand, tryCustomCommand } from "../src/command-registry.js";
+import { handleCommandsCommand, handleCustomCommandApprovalCallback, tryCustomCommand } from "../src/command-registry.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 let sentMessages: Array<{ chatId: string; text: string; options?: Record<string, unknown> }> = [];
@@ -233,6 +233,92 @@ describe("Workflow step template interpolation", () => {
     const ctx = mockCtx();
     await tryCustomCommand(ctx, "token", "123", "multi", "", undefined, "co-1");
     expect(sentMessages.some(m => m.text === "first said: sent")).toBe(true);
+  });
+
+  it("pauses execution at wait_approval step and resumes on approval", async () => {
+    stateStore["commands_co-1"] = [{
+      name: "release",
+      description: "Release flow",
+      steps: [
+        { id: "confirm", type: "wait_approval", prompt: "Approve release?" },
+        { id: "notify", type: "send_message", text: "Release sent" },
+      ],
+      createdBy: "test",
+      createdAt: "2026-01-01",
+    }];
+
+    const ctx = mockCtx();
+    const result = await tryCustomCommand(ctx, "token", "123", "release", "", undefined, "co-1");
+    expect(result).toBe(true);
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].text).toBe("Approve release?");
+
+    const approvalStateEntry = Object.entries(stateStore).find(([stateKey]) => stateKey.startsWith("cmd_approval_"));
+    expect(approvalStateEntry).toBeDefined();
+
+    const [stateKey, rawState] = approvalStateEntry!;
+    expect((rawState as { status: string }).status).toBe("pending");
+
+    const approvalId = stateKey.replace("cmd_approval_", "");
+    const resumeStatus = await handleCustomCommandApprovalCallback(ctx, "token", approvalId, "approve", "alice");
+    expect(resumeStatus).toBe("handled");
+    expect(sentMessages[1].text).toBe("Release sent");
+    expect((stateStore[stateKey] as { status: string }).status).toBe("approved");
+  });
+
+  it("halts workflow on rejection and keeps pending follow-up steps from running", async () => {
+    stateStore["commands_co-1"] = [{
+      name: "release",
+      description: "Release flow",
+      steps: [
+        { id: "confirm", type: "wait_approval", prompt: "Approve release?" },
+        { id: "notify", type: "send_message", text: "Release sent" },
+      ],
+      createdBy: "test",
+      createdAt: "2026-01-01",
+    }];
+
+    const ctx = mockCtx();
+    const result = await tryCustomCommand(ctx, "token", "123", "release", "", undefined, "co-1");
+    expect(result).toBe(true);
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].text).toBe("Approve release?");
+
+    const approvalStateEntry = Object.entries(stateStore).find(([stateKey]) => stateKey.startsWith("cmd_approval_"));
+    expect(approvalStateEntry).toBeDefined();
+
+    const [stateKey, rawState] = approvalStateEntry!;
+    expect((rawState as { status: string }).status).toBe("pending");
+
+    const approvalId = stateKey.replace("cmd_approval_", "");
+    const resumeStatus = await handleCustomCommandApprovalCallback(ctx, "token", approvalId, "reject", "alice");
+    expect(resumeStatus).toBe("handled");
+    expect(sentMessages.length).toBe(1);
+    expect((stateStore[stateKey] as { status: string }).status).toBe("rejected");
+  });
+
+  it("resumes with prior wait_approval result available for interpolation", async () => {
+    stateStore["commands_co-1"] = [{
+      name: "release",
+      description: "Release flow",
+      steps: [
+        { id: "confirm", type: "wait_approval", prompt: "Approve release?" },
+        { id: "notify", type: "send_message", text: "prev={{prev.result}} confirm={{confirm.result}}" },
+      ],
+      createdBy: "test",
+      createdAt: "2026-01-01",
+    }];
+
+    const ctx = mockCtx();
+    await tryCustomCommand(ctx, "token", "123", "release", "", undefined, "co-1");
+    const approvalStateEntry = Object.entries(stateStore).find(([stateKey]) => stateKey.startsWith("cmd_approval_"));
+    expect(approvalStateEntry).toBeDefined();
+
+    const [stateKey, rawState] = approvalStateEntry!;
+    const approvalId = stateKey.replace("cmd_approval_", "");
+    await handleCustomCommandApprovalCallback(ctx, "token", approvalId, "approve", "alice");
+
+    expect(sentMessages[1].text).toBe("prev=awaiting_approval confirm=awaiting_approval");
   });
 });
 

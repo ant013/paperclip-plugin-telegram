@@ -184,7 +184,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `enableInbound` | No | Route Telegram replies to issues (default: true) |
 | `onlyNotifyBoardApprovals` | No | When enabled, send Telegram approval notifications only for `request_board_approval` approvals |
 | `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use commands, inbound replies, media intake, and inline buttons. Empty means any user is allowed |
-| `allowedTelegramChatIds` | No | Optional allowlist of Telegram chat IDs where commands, inbound replies, media intake, and inline buttons are accepted. Empty means any chat is allowed |
+| `allowedTelegramChatIds` | No | Optional allowlist of Telegram **inbound** chat IDs where commands, inbound replies, media intake, and inline buttons are accepted. Empty means any chat is allowed |
 | `topicRouting` | No | Map forum topics to projects (default: false) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for digest, HH:MM (default: 09:00) |
@@ -218,6 +218,19 @@ The allowlists apply to:
 
 Leave an allowlist empty only if that dimension should be unrestricted. After changing allowlists, save the plugin settings and restart the plugin if the new values are not picked up immediately.
 
+### Outbound agent destination control
+
+Agent tools `send_to_telegram` and `send_file_to_telegram` are intentionally explicit and do not inherit inbound allowlist behavior.
+
+Outbound rules:
+
+- If `chatId` is omitted, the plugin uses the mapped company chat, falling back to `defaultChatId`.
+- If `chatId` is provided explicitly, it must be present in `allowedTelegramChatIds`.
+- If `allowedTelegramChatIds` is empty, explicit `chatId` input is rejected.
+- Empty allowlist does **not** disable configured default/company destinations.
+
+The allowlist is only an outbound gate for explicit `chatId`; it is not a global override for all outbound sends.
+
 ### Board access for approval actions
 
 Approval buttons and `/approve <approval-id>` call Paperclip approval APIs. Authenticated Paperclip deployments may require a board API token for those mutations.
@@ -237,7 +250,44 @@ The plugin stores the resulting board API token as a Paperclip company secret an
 | `escalate_to_human` | 1 | Escalate a conversation to a human when confidence is low |
 | `handoff_to_agent` | 2 | Hand off work to another agent in this thread |
 | `discuss_with_agent` | 2 | Start a back-and-forth conversation with another agent |
+| `send_to_telegram` | 6 | Send text and Markdown documents to Telegram |
+| `send_file_to_telegram` | 6 (legacy) | Deprecated compatibility alias for `send_to_telegram` |
 | `register_watch` | 5 | Register a proactive watch that monitors entities and sends suggestions |
+
+### `send_to_telegram` contract
+
+Schema (shared with `send_file_to_telegram`):
+
+- `text` (optional): text message, or caption when `markdownContent` is provided.
+- `markdownContent` (optional): markdown document content to upload as a `.md` file.
+- `chatId` (optional): explicit Telegram chat ID override.
+- `markdownFileName` (optional): filename for markdown upload, defaults to `paperclip-message.md`.
+- `parseMode` (optional): `MarkdownV2` or `HTML` for text/caption only.
+- `threadId` (optional): Telegram forum topic ID.
+- `replyToMessageId` (optional): Telegram message ID to reply to.
+- `silent` (optional): send without notification.
+
+Validation and behavior:
+
+- At least one of `text` or `markdownContent` is required.
+- `.md` upload is enforced: filenames must end in `.md`.
+- Source fields outside contract are rejected (`path`, `filePath`, `url`, `fileUrl`, `fileURL`, `uri`, `fileUri`, `file_uri`, `telegramFileId`, `telegram_file_id`, `file_id`, `file`, `files`, `binary`, `binaryContent`, `fileContent`, `content`).
+- `markdownContent` is content-only; no path or file payload arguments are accepted.
+- Safe filename checks reject separators, traversal (`../`, `..\\`, `/`, `\\`), dotfiles, secret-like names (`secret`, `token`, `credential`, `password`, `private-key`), and Windows drive prefixes like `C:report.md`.
+- `markdownContent` and `text` caps are enforced: `256 KiB` and `1024` bytes respectively.
+- Explicit `chatId` must pass `allowedTelegramChatIds`; empty allowlist rejects explicit IDs.
+- Response includes structured result/error with required codes:
+  - `missing_content`
+  - `disallowed_chat`
+  - `invalid_thread`
+  - `invalid_markdown_filename`
+  - `non_markdown_file`
+  - `unsafe_filename`
+  - `unsupported_file_source`
+  - `markdown_too_large`
+  - `caption_too_large`
+  - `telegram_send_failed`
+- Telegram API failures are returned as structured errors and count `telegram_notification_failures`.
 
 ## Comparison with PR #407
 

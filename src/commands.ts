@@ -728,11 +728,14 @@ async function getProjectNameForTopic(
   const topicMap = (await ctx.state.get({
     scopeKind: "instance",
     stateKey: `topic-map-${chatId}`,
-  })) as Record<string, string> | null;
+  })) as TopicMap | null;
   if (!topicMap) return undefined;
 
   const topicId = String(messageThreadId);
-  const match = Object.entries(topicMap).find(([, mappedTopicId]) => mappedTopicId === topicId);
+  const match = Object.entries(topicMap).find(([projectName, mappedTopic]) => {
+    const mapping = normalizeTopicMapping(projectName, mappedTopic);
+    return mapping.topicId === topicId;
+  });
   return match?.[0];
 }
 

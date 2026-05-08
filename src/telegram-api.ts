@@ -19,6 +19,15 @@ export type SendMessageOptions = {
   disableNotification?: boolean;
 };
 
+export type SendDocumentOptions = {
+  filename: string;
+  caption?: string;
+  parseMode?: "MarkdownV2" | "HTML";
+  replyToMessageId?: number;
+  messageThreadId?: number;
+  disableNotification?: boolean;
+};
+
 export async function sendMessage(
   ctx: PluginContext,
   token: string,
@@ -87,6 +96,79 @@ export async function sendMessage(
       return null;
     }
   }
+  return null;
+}
+
+export async function sendDocument(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  markdownContent: string,
+  options: SendDocumentOptions,
+): Promise<number | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const body = new FormData();
+    body.append("chat_id", chatId);
+    body.append(
+      "document",
+      new Blob([markdownContent], { type: "text/markdown; charset=utf-8" }),
+      options.filename,
+    );
+    if (options.caption) body.append("caption", options.caption);
+    if (options.parseMode) body.append("parse_mode", options.parseMode);
+    if (options.replyToMessageId) body.append("reply_to_message_id", String(options.replyToMessageId));
+    if (options.messageThreadId) body.append("message_thread_id", String(options.messageThreadId));
+    if (options.disableNotification) body.append("disable_notification", "true");
+
+    try {
+      const res = await ctx.http.fetch(`${TELEGRAM_API}/bot${token}/sendDocument`, {
+        method: "POST",
+        body,
+      });
+
+      const data = (await res.json()) as {
+        ok: boolean;
+        result?: { message_id: number };
+        description?: string;
+        parameters?: { retry_after?: number };
+      };
+
+      if (!data.ok) {
+        if (data.parameters?.retry_after && attempt < 2) {
+          const wait = data.parameters.retry_after * 1000;
+          ctx.logger.warn("Telegram rate limited, retrying file send", {
+            retryAfter: data.parameters.retry_after,
+            attempt,
+          });
+          await new Promise((r) => setTimeout(r, wait));
+          continue;
+        }
+
+        if (options.parseMode === "MarkdownV2" && options.caption) {
+          ctx.logger.warn("MarkdownV2 file caption failed, retrying as plain text", {
+            error: data.description,
+          });
+          return sendDocument(ctx, token, chatId, markdownContent, {
+            ...options,
+            caption: stripMarkdown(options.caption),
+            parseMode: undefined,
+          });
+        }
+
+        ctx.logger.error("Telegram document send failed", { error: data.description });
+        await ctx.metrics.write(METRIC_NAMES.failed, 1);
+        return null;
+      }
+
+      await ctx.metrics.write(METRIC_NAMES.sent, 1);
+      return data.result?.message_id ?? null;
+    } catch (err) {
+      ctx.logger.error("Telegram document API error", { error: String(err) });
+      await ctx.metrics.write(METRIC_NAMES.failed, 1);
+      return null;
+    }
+  }
+
   return null;
 }
 
