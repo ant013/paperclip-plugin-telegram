@@ -91,10 +91,11 @@ export class EscalationManager {
       ?? event.agentId;
 
     const lines: string[] = [
-      `${esc("\u26a0\ufe0f")} *Escalation* \\- ${esc(reasonLabel)}${confidence}`,
+      `${esc("\u26a0\ufe0f")} *Escalation*`,
+      `${esc("Reason:")} ${esc(reasonLabel)}${confidence}`,
       "",
       `*Agent:* ${esc(agentLabel)}`,
-      `*Reason:* ${esc(event.context.agentReasoning ? truncateAtWord(event.context.agentReasoning, 500) : "No details provided")}`,
+      `*Reasoning:* ${esc(event.context.agentReasoning ? truncateAtWord(event.context.agentReasoning, 500) : "No details provided")}`,
     ];
 
     if (event.context.suggestedActions.length > 0) {

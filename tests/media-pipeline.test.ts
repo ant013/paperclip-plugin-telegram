@@ -345,9 +345,8 @@ describe("Brief agent display names", () => {
 
     const confirmation = sentMessages.find((message) => message.text.includes("Media sent"));
     expect(confirmation?.text).toContain("Brief Writer");
-    expect(confirmation?.options?.inlineKeyboard).toEqual([
-      [{ text: "View Run ↗", url: "https://paperclip.example/agents/brief-agent/runs/run-1" }],
-    ]);
+    expect(confirmation?.text).toContain("Run run\\-1");
+    expect(confirmation?.options?.inlineKeyboard).toBeUndefined();
   });
 });
 

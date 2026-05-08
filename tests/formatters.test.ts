@@ -250,6 +250,15 @@ describe("formatAgentRunStarted", () => {
     expect(msg.text).toContain("Ship Bot");
   });
 
+  it("adds run link on new line when base URL is provided", () => {
+    const msg = formatAgentRunStarted(mockEvent({ agentName: "Deployer", runId: "run-1", agentId: "agent-1" }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.text).toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
+    expect(msg.text.split("\n").length).toBeGreaterThan(1);
+  });
+
   it("disables notification", () => {
     const msg = formatAgentRunStarted(mockEvent());
     expect(msg.options.disableNotification).toBe(true);
@@ -266,6 +275,15 @@ describe("formatAgentRunFinished", () => {
   it("uses displayName as run-finished label fallback", () => {
     const msg = formatAgentRunFinished(mockEvent({ displayName: "Ship Bot" }));
     expect(msg.text).toContain("Ship Bot");
+  });
+
+  it("adds run link on new line when base URL is provided", () => {
+    const msg = formatAgentRunFinished(mockEvent({ agentName: "Deployer", runId: "run-1", agentId: "agent-1" }), {
+      baseUrl: "https://paperclip.example",
+      issuePrefix: "companies/abc",
+    });
+    expect(msg.text).toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
+    expect(msg.text.split("\n").length).toBeGreaterThan(1);
   });
 
   it("disables notification", () => {
