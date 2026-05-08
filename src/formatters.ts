@@ -242,7 +242,8 @@ export function formatAgentError(event: PluginEvent, opts?: IssueLinksOpts): For
     `${esc("❌")} ${bold(classifyAgentError(errorMessage))}`,
   ];
   if (issueContext) {
-    lines.push(`${bold(agentName)} ${esc("failed")} / ${issueContext}`);
+    lines.push(`${bold(agentName)} ${esc("failed")}`);
+    lines.push(issueContext);
   } else {
     lines.push(`Agent: ${bold(agentName)}`);
     const runLink = runLinkLine(agentId, runId, opts?.baseUrl);
@@ -269,11 +270,16 @@ export function formatAgentRunStarted(event: PluginEvent, opts?: IssueLinksOpts)
   const issueIdentifier = p.issueIdentifier ? String(p.issueIdentifier) : null;
   const issueTitle = p.issueTitle ? String(p.issueTitle) : null;
   const issueContext = issueTaskRunContext(issueIdentifier, issueTitle, opts);
-  const fallbackContext = issueContext ?? runLinkLine(agentId, runId, opts?.baseUrl);
 
   const lines: string[] = [
-    `${esc("▶️")} ${bold(agentName)} ${esc("started")}${fallbackContext ? ` / ${fallbackContext}` : ""}`,
+    `${esc("▶️")} ${bold(agentName)} ${esc("started")}`,
   ];
+  if (issueContext) {
+    lines.push(issueContext);
+  } else {
+    const fallbackContext = runLinkLine(agentId, runId, opts?.baseUrl);
+    if (fallbackContext) lines[0] += ` / ${fallbackContext}`;
+  }
 
   return {
     text: lines.join("\n"),
@@ -292,11 +298,16 @@ export function formatAgentRunFinished(event: PluginEvent, opts?: IssueLinksOpts
   const issueIdentifier = p.issueIdentifier ? String(p.issueIdentifier) : null;
   const issueTitle = p.issueTitle ? String(p.issueTitle) : null;
   const issueContext = issueTaskRunContext(issueIdentifier, issueTitle, opts);
-  const fallbackContext = issueContext ?? runLinkLine(agentId, runId, opts?.baseUrl);
 
   const lines: string[] = [
-    `${esc("⏹️")} ${bold(agentName)} ${esc("completed")}${fallbackContext ? ` / ${fallbackContext}` : ""}`,
+    `${esc("⏹️")} ${bold(agentName)} ${esc("completed")}`,
   ];
+  if (issueContext) {
+    lines.push(issueContext);
+  } else {
+    const fallbackContext = runLinkLine(agentId, runId, opts?.baseUrl);
+    if (fallbackContext) lines[0] += ` / ${fallbackContext}`;
+  }
 
   return {
     text: lines.join("\n"),
