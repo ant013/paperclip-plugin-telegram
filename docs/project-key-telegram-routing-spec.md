@@ -6,17 +6,18 @@ Scope: spec-only; no implementation until review approval
 
 ## Summary
 
-Add a dedicated `Files` routing section for the TelegramUpdate plugin so agent-initiated `send_to_telegram` text/Markdown document sends can route by Paperclip issue/project key without requiring every agent call to pass a raw Telegram `chatId`.
+Add a dedicated `Files` routing section for the TelegramUpdate plugin so agent-initiated `send_to_telegram` Markdown document sends can route by Paperclip issue/project key without requiring every agent call to pass a raw Telegram `chatId`.
 
 First release scope is intentionally narrow:
 
-- applies only to TEL-8 outbound agent sends:
+- applies only to TEL-8 outbound Markdown document sends:
   - `send_to_telegram`
   - legacy alias `send_file_to_telegram`
 - routes by explicit `projectKey` or by the prefix parsed from `issueIdentifier`, for example `TEL-8` -> `TEL`
 - preserves existing automatic notifications behavior
 - preserves existing explicit `chatId` behavior from TEL-8
 - fails closed for Markdown document sends when file routing is requested but unresolved or ambiguous
+- leaves text-only `send_to_telegram` behavior unchanged in v1
 
 This spec is for the TelegramUpdate/TEL plugin project. It must not introduce Gimle-specific examples, assumptions, or routing defaults.
 
@@ -47,6 +48,7 @@ Current limitation:
 
 - Do not change Paperclip core event emission.
 - Do not change automatic issue/run/error/approval/digest/escalation notifications in v1.
+- Do not route text-only sends by project key in v1.
 - Do not infer destinations from message body text, Markdown content, filenames, or captions.
 - Do not add arbitrary regex routing in v1.
 - Do not allow arbitrary local file paths or binary uploads.
@@ -109,7 +111,7 @@ Operator safety requirements:
 
 - new routes default to disabled until required fields are valid
 - project key input accepts uppercase letters/numbers only and is stored uppercase
-- UI shows the effective rule: `TEL-* -> chatId/topicId`
+- UI shows the effective rule: `projectKey TEL -> route "TEL files"` and explains that issue keys like `TEL-8` match by extracting the exact `TEL` prefix.
 - UI blocks save when enabled routes have duplicate project keys
 - UI blocks save when `chatId` is empty or malformed
 - UI blocks save when `topicId` is non-numeric
@@ -138,6 +140,8 @@ resolveTelegramFileDestination(ctx, config, request): Promise<{
     | "unknown_project_route"
     | "ambiguous_route"
     | "invalid_route_config"
+    | "conflicting_destination"
+    | "unresolved_issue"
     | "disallowed_chat";
   message: string;
 }>
@@ -166,6 +170,12 @@ Normalize action/tool parameters before routing:
 
 If `issueId` is present and `issueIdentifier` / `projectKey` are missing, the plugin may fetch the issue and derive `issueIdentifier`.
 
+Issue lookup requirements:
+
+- issue lookup must be scoped to the current `companyId`
+- foreign-company, missing, or unresolvable `issueId` must fail closed with `unresolved_issue`
+- `unresolved_issue` must be returned before any Telegram API call
+
 Do not parse route context out of:
 
 - `text`
@@ -175,12 +185,31 @@ Do not parse route context out of:
 
 ## Precedence
 
-For `send_to_telegram`:
+For `send_to_telegram` Markdown document sends:
 
-1. explicit `chatId` / `threadId`, if provided and allowed by existing TEL-8 explicit-chat rules
-2. exact enabled `fileRoutes` match by normalized `projectKey`
-3. legacy company/default fallback only when no route context was supplied
-4. structured error
+The resolver has three mutually exclusive destination modes:
+
+1. Explicit mode:
+   - caller provides `chatId`
+   - caller must not provide `projectKey`, `issueIdentifier`, or `issueId`
+   - caller may provide `threadId`
+   - existing TEL-8 explicit-chat allowlist behavior applies
+2. Route mode:
+   - caller provides `projectKey`, `issueIdentifier`, or `issueId`
+   - caller must not provide `chatId` or `threadId`
+   - exact enabled `fileRoutes` match selects `chatId` and optional `topicId`
+3. Legacy fallback mode:
+   - caller provides no explicit destination and no route context
+   - existing company/default fallback behavior applies
+
+If explicit and route inputs are mixed, return `conflicting_destination` before any Telegram API call.
+
+Topic behavior:
+
+- explicit mode honors caller `threadId`
+- route mode uses only `fileRoutes[].topicId`
+- route-aware sends with caller `threadId` must return `conflicting_destination`
+- legacy fallback keeps current TEL-8 thread behavior
 
 Fail-closed cases:
 
@@ -188,11 +217,14 @@ Fail-closed cases:
 - `markdownContent` is present and caller supplied route context, but route config is invalid.
 - multiple enabled file routes match the same normalized project key.
 - route exists but has invalid chat/topic config.
+- caller mixes explicit destination fields with route context.
+- `issueId` cannot be resolved inside the current company.
 
 Backward compatibility:
 
 - existing `send_to_telegram(chatId=...)` behavior remains unchanged.
 - existing text-only sends without route context may continue using company/default fallback.
+- text-only sends do not use `fileRoutes` in v1, even if `issueIdentifier`, `issueId`, or `projectKey` are provided.
 - existing Markdown sends without route context may continue using company/default fallback for compatibility, but new route-aware calls must fail closed when route resolution fails.
 
 ## Matching behavior
@@ -224,9 +256,15 @@ Route object validation:
 - `name` must be non-empty and unique after trim
 - `projectKey` must match `^[A-Z][A-Z0-9]*$`
 - enabled routes must not duplicate `projectKey`
-- `chatId` must be non-empty for enabled routes
+- `chatId` must match `^-?\d+$` for enabled routes
 - `topicId`, if present, must match `^\d+$`
 - disabled invalid routes should be shown in UI but ignored by worker
+
+Validation implementation requirements:
+
+- UI save-time validation and worker/action-time validation must use the same validation rules
+- UI must block save for invalid enabled routes
+- worker/action-time validation must prevent invalid enabled routes from reaching Telegram
 
 If worker sees invalid enabled route config:
 
@@ -275,6 +313,12 @@ Do not log:
 - text/caption body
 - raw file content
 
+Config-change audit:
+
+- changes to `fileRoutes` should be logged with actor/user context when available
+- audit log should include old/new route name, project key, chat id, topic id, enabled state, timestamp, and company/plugin context
+- audit log must not include bot token, secret refs, message content, or document content
+
 ## Backward compatibility
 
 Existing installs without `fileRoutes` behave exactly as today.
@@ -304,10 +348,18 @@ Unchanged in v1:
 - Invalid enabled route config fails closed for route-aware Markdown sends.
 - Existing explicit allowed `chatId` still works.
 - Existing explicit disallowed `chatId` is rejected before calling Telegram.
+- Route-aware Markdown send with both `chatId` and `issueIdentifier` fails with `conflicting_destination` before calling Telegram.
+- Route-aware Markdown send with `threadId` but no explicit `chatId` fails with `conflicting_destination` before calling Telegram.
+- Routed Markdown send uses `fileRoutes[].topicId`.
+- Explicit `chatId + threadId` behavior remains unchanged.
+- Route-aware Markdown send with foreign-company, missing, or unresolvable `issueId` fails with `unresolved_issue` before calling Telegram.
 - Existing text-only sends without route context keep existing fallback behavior.
+- Text-only sends do not use `fileRoutes` in v1.
 - Existing Markdown sends without route context keep existing fallback behavior unless a later approved spec changes this.
 - Automatic issue/run/error/approval/digest/escalation notifications remain unchanged.
+- With `fileRoutes` configured, automatic notifications resolve to the same destinations as before and do not call the file resolver.
 - Logs include route decision metadata but not content or secrets.
+- `fileRoutes` config changes are auditable without leaking secrets/content.
 - Full existing test suite still passes.
 
 ## Test plan
@@ -323,9 +375,13 @@ New focused tests:
 
 - file destination resolver:
   - explicit chat wins
+  - explicit `chatId + threadId` wins in explicit mode
+  - route context mixed with `chatId` returns `conflicting_destination`
+  - route context mixed with `threadId` returns `conflicting_destination`
   - projectKey route match
   - issueIdentifier route match
   - issueId enrichment route match
+  - foreign-company or unresolvable issueId returns `unresolved_issue`
   - no route context uses legacy fallback
   - unmatched route-aware document fails closed
   - duplicate enabled projectKey fails closed
@@ -333,14 +389,18 @@ New focused tests:
   - disabled invalid route is ignored
   - numeric topic id is parsed
   - non-numeric topic id is rejected
+  - routed sends use route `topicId`
 - `send_to_telegram`:
   - TEL route sends Markdown document to route chat/topic
   - TEST route sends Markdown document to separate test chat/topic
   - unmatched route-aware Markdown does not call Telegram
   - explicit chat path still follows existing allowlist behavior
   - text-only no-context fallback still works
+  - text-only sends do not use `fileRoutes`
 - regression:
+  - shared route validation is used by UI and worker/action-time paths
   - existing notification formatter tests pass
+  - automatic notifications ignore `fileRoutes`
   - existing command/media/ACP/escalation/approval tests pass
   - existing TEL-8 file send tests pass or are updated only for explicit new route behavior
 
@@ -355,15 +415,17 @@ Production-safe smoke after implementation approval:
 - confirm document appears only in the TEST file destination
 - send a small Markdown document with `issueIdentifier: "OPS-1"` and no OPS route
 - confirm plugin returns structured failure and no Telegram document appears
+- prove no Telegram API send was attempted for the unmatched case using at least one negative-path oracle:
+  - outbound log/metric showing no send attempt
+  - Telegram request count unchanged
+  - fallback/default destination checked before and after the call
 - verify plugin logs show route name/message id for success and error code for failure without content leakage
 
 ## Open questions for review
 
-1. Is v1 confirmed as `files` / `send_to_telegram` only?
-2. Should v1 expose only exact `projectKey` matching, with raw regex deferred?
-3. Should route-aware Markdown sends fail closed on no match while legacy no-context Markdown sends keep fallback?
-4. Should configured route chats be treated as admin-managed destinations outside `allowedTelegramChatIds`, as specified?
-5. What issue should own this work in Paperclip so all agents keep the cycle inside one issue?
+1. What issue should own this work in Paperclip so all agents keep the cycle inside one issue?
+2. Is route-aware text support explicitly deferred to a future spec?
+3. Is config-change audit available through current plugin APIs, or should first implementation use structured logs only?
 
 ## Future work, separate spec required
 
@@ -372,4 +434,3 @@ Production-safe smoke after implementation approval:
 - add advanced regex routing
 - add global outbound destination allowlist
 - fan out multi-issue approvals across project routes
-
