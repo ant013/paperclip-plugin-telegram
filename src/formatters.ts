@@ -56,6 +56,12 @@ function runButton(agentId: string, runId: string | null, publicUrl?: string): {
   return null;
 }
 
+function runLinkLine(agentId: string, runId: string | null, publicUrl?: string): string | null {
+  if (!runId) return null;
+  if (!publicUrl || !isExternalUrl(publicUrl)) return `Run: ${code(runId)}`;
+  return `[${esc("Run")} ${esc(runId)}](${publicUrl}/agents/${agentId}/runs/${runId})`;
+}
+
 function classifyAgentError(errorMessage: string): string {
   if (/timed?\s*out|timeout/i.test(errorMessage)) return "Agent Timeout";
   if (/limit|rate.?limit|quota/i.test(errorMessage)) return "Agent Rate Limit";
@@ -259,20 +265,17 @@ export function formatAgentRunStarted(event: PluginEvent, opts?: IssueLinksOpts)
   const agentName = String(p.agentName ?? p.displayName ?? p.name ?? agentId);
   const runId = p.runId ? String(p.runId) : null;
 
-  const buttons: Array<{ text: string; url: string }> = [];
-  if (opts?.baseUrl && isExternalUrl(opts.baseUrl)) {
-    const url = runId
-      ? `${opts.baseUrl}/agents/${agentId}/runs/${runId}`
-      : `${opts.baseUrl}/agents/${agentId}`;
-    buttons.push({ text: "View Run ↗", url });
+  const lines = [`${esc("▶️")} ${bold(agentName)} ${esc("started a new run")}`];
+  const runLink = runLinkLine(agentId, runId, opts?.baseUrl);
+  if (runLink) {
+    lines.push(runLink);
   }
 
   return {
-    text: `${esc("▶️")} ${bold(agentName)} ${esc("started a new run")}`,
+    text: lines.join("\n"),
     options: {
       parseMode: "MarkdownV2",
       disableNotification: true,
-      ...(buttons.length > 0 ? { inlineKeyboard: [buttons] } : {}),
     },
   };
 }
@@ -283,20 +286,17 @@ export function formatAgentRunFinished(event: PluginEvent, opts?: IssueLinksOpts
   const agentName = String(p.agentName ?? p.displayName ?? p.name ?? agentId);
   const runId = p.runId ? String(p.runId) : null;
 
-  const buttons: Array<{ text: string; url: string }> = [];
-  if (opts?.baseUrl && isExternalUrl(opts.baseUrl)) {
-    const url = runId
-      ? `${opts.baseUrl}/agents/${agentId}/runs/${runId}`
-      : `${opts.baseUrl}/agents/${agentId}`;
-    buttons.push({ text: "View Run ↗", url });
+  const lines = [`${esc("⏹️")} ${bold(agentName)} ${esc("completed successfully")}`];
+  const runLink = runLinkLine(agentId, runId, opts?.baseUrl);
+  if (runLink) {
+    lines.push(runLink);
   }
 
   return {
-    text: `${esc("⏹️")} ${bold(agentName)} ${esc("completed successfully")}`,
+    text: lines.join("\n"),
     options: {
       parseMode: "MarkdownV2",
       disableNotification: true,
-      ...(buttons.length > 0 ? { inlineKeyboard: [buttons] } : {}),
     },
   };
 }

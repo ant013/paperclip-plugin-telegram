@@ -93,9 +93,9 @@ export async function handleMediaMessage(
       });
 
       const hasPublicUrl = config.publicUrl && config.publicUrl.startsWith("https://");
-      const inlineKeyboard = hasPublicUrl
-        ? [[{ text: "View Run ↗", url: `${config.publicUrl}/agents/${config.briefAgentId}/runs/${runId}` }]]
-        : undefined;
+      const runLine = hasPublicUrl
+        ? `[${escapeMarkdownV2("Run")} ${escapeMarkdownV2(runId)}](${config.publicUrl}/agents/${config.briefAgentId}/runs/${runId})`
+        : `Run: \`${escapeMarkdownV2(runId)}\``;
       const briefAgentName = await resolveAgentDisplayName(ctx, companyId, config.briefAgentId, {
         fallbackName: "Brief Agent",
       }) ?? "Brief Agent";
@@ -104,12 +104,11 @@ export async function handleMediaMessage(
         ctx,
         token,
         chatId,
-        `${escapeMarkdownV2("\ud83d\udcdd")} Media sent to ${escapeMarkdownV2(briefAgentName)} \\(run: \`${escapeMarkdownV2(runId)}\`\\)`,
+        `${escapeMarkdownV2("\ud83d\udcdd")} Media sent to ${escapeMarkdownV2(briefAgentName)}\n${runLine}`,
         {
           parseMode: "MarkdownV2",
           messageThreadId: threadId,
           replyToMessageId: msg.message_id,
-          inlineKeyboard,
         },
       );
 
