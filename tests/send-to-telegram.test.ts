@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import * as telegramApi from "../src/telegram-api.js";
-import { sendToTelegramTool } from "../src/worker.js";
+import { resolveTelegramOpsDestination, sendToTelegramTool } from "../src/worker.js";
 
 function stateKey(key: { scopeKind: string; scopeId?: string; stateKey: string }): string {
   return `${key.scopeKind}:${key.scopeId ?? ""}:${key.stateKey}`;
@@ -715,5 +715,47 @@ describe("sendToTelegramTool", () => {
     expect(sentText).toBe(markdownContent);
     expect(requestBody.get("chat_id")).toBe("-1001");
     expect(requestBody.get("caption")).toBe("Smoke test output");
+  });
+});
+
+describe("resolveTelegramOpsDestination", () => {
+  it("routes operational notifications by company id", () => {
+    const destination = resolveTelegramOpsDestination(
+      [
+        { name: "Gimle Ops", enabled: true, companyId: "gimle-company", chatId: "-1001", topicId: "10" },
+        { name: "TG Ops", enabled: true, companyId: "tg-company", chatId: "-1002" },
+      ],
+      "tg-company",
+    );
+
+    expect(destination).toEqual({
+      chatId: "-1002",
+      routeName: "TG Ops",
+      topicId: undefined,
+    });
+  });
+
+  it("routes operational notifications by company name when company id is absent", () => {
+    const destination = resolveTelegramOpsDestination(
+      [
+        { name: "Gimle Ops", enabled: true, companyName: "Gimle", chatId: "-1001" },
+      ],
+      "unknown-company-id",
+      "gimle",
+    );
+
+    expect(destination).toMatchObject({ chatId: "-1001", routeName: "Gimle Ops" });
+  });
+
+  it("ignores disabled or incomplete operational routes", () => {
+    const destination = resolveTelegramOpsDestination(
+      [
+        { name: "Disabled", enabled: false, companyId: "company-1", chatId: "-1001" },
+        { name: "Missing chat", enabled: true, companyId: "company-1" },
+      ],
+      "company-1",
+    );
+
+    expect(destination).toBeNull();
   });
 });

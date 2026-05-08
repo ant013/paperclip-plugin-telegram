@@ -79,6 +79,7 @@ type TelegramConfig = {
   allowedTelegramUserIds: string[];
   allowedTelegramChatIds: string[];
   fileRoutes?: TelegramFileRoute[];
+  opsRoutes?: TelegramOpsRoute[];
   digestMode: "off" | "daily" | "bidaily" | "tridaily";
   dailyDigestTime: string;
   bidailySecondTime: string;
@@ -96,6 +97,21 @@ type TelegramConfig = {
   // Phase 5: Proactive Suggestions
   maxSuggestionsPerHourPerCompany: number;
   watchDeduplicationWindowMs: number;
+};
+
+export type TelegramOpsRoute = {
+  name?: unknown;
+  enabled?: unknown;
+  companyId?: unknown;
+  companyName?: unknown;
+  chatId?: unknown;
+  topicId?: unknown;
+};
+
+type TelegramOpsDestination = {
+  chatId: string;
+  topicId?: string;
+  routeName?: string;
 };
 
 type TelegramUpdate = {
@@ -180,6 +196,57 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function routeEnabled(value: unknown): boolean {
+  return value !== false;
+}
+
+export function resolveTelegramOpsDestination(
+  routes: unknown,
+  companyId: string,
+  companyName?: string | null,
+): TelegramOpsDestination | null {
+  if (!Array.isArray(routes)) return null;
+
+  const normalizedCompanyName = asNonEmptyString(companyName)?.toLowerCase() ?? null;
+  for (const route of routes) {
+    if (!isRecord(route) || !routeEnabled(route.enabled)) continue;
+
+    const chatId = asNonEmptyString(route.chatId);
+    if (!chatId) continue;
+
+    const routeCompanyId = asNonEmptyString(route.companyId);
+    const routeCompanyName = asNonEmptyString(route.companyName)?.toLowerCase() ?? null;
+    const matchesCompanyId = Boolean(routeCompanyId && routeCompanyId === companyId);
+    const matchesCompanyName = Boolean(routeCompanyName && normalizedCompanyName && routeCompanyName === normalizedCompanyName);
+    if (!matchesCompanyId && !matchesCompanyName) continue;
+
+    const topicId = asNonEmptyString(route.topicId) ?? undefined;
+    return {
+      chatId,
+      topicId,
+      routeName: asNonEmptyString(route.name) ?? undefined,
+    };
+  }
+
+  return null;
+}
+
+async function resolveOpsDestinationForEvent(
+  ctx: PluginContext,
+  config: Pick<TelegramConfig, "opsRoutes">,
+  event: PluginEvent,
+): Promise<TelegramOpsDestination | null> {
+  const direct = resolveTelegramOpsDestination(config.opsRoutes, event.companyId);
+  if (direct) return direct;
+
+  try {
+    const company = await ctx.companies.get(event.companyId);
+    return resolveTelegramOpsDestination(config.opsRoutes, event.companyId, company?.name ?? null);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeBoardAccessState(value: unknown): TelegramBoardAccessState {
@@ -1042,14 +1109,16 @@ export const plugin = definePlugin({
       ctx.events.on("agent.run.started", async (event: PluginEvent) => {
         await enrichAgentName(event, { fallbackToEntityId: true });
         await enrichRunIssueContext(ctx, event);
-        await notify(event, formatAgentRunStarted);
+        const opsDestination = await resolveOpsDestinationForEvent(ctx, config, event);
+        await notify(event, formatAgentRunStarted, opsDestination?.chatId, opsDestination?.topicId);
       });
     }
     if (config.notifyOnAgentRunFinished) {
       ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
         await enrichAgentName(event, { fallbackToEntityId: true });
         await enrichRunIssueContext(ctx, event);
-        await notify(event, formatAgentRunFinished);
+        const opsDestination = await resolveOpsDestinationForEvent(ctx, config, event);
+        await notify(event, formatAgentRunFinished, opsDestination?.chatId, opsDestination?.topicId);
       });
     }
 
