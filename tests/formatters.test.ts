@@ -277,7 +277,7 @@ describe("formatAgentError", () => {
     });
     expect(msg.options.inlineKeyboard).toBeUndefined();
     expect(msg.text).toContain("Builder");
-    expect(msg.text).toContain("failed / [ISS\\-1](https://paperclip.example/companies/abc/issues/ISS-1) Issue one");
+    expect(msg.text).toContain("failed\n[ISS\\-1](https://paperclip.example/companies/abc/issues/ISS-1) Issue one");
     expect(msg.text).not.toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
   });
 
@@ -361,11 +361,12 @@ describe("formatAgentRunStarted", () => {
       issuePrefix: "companies/abc",
     });
     expect(msg.text).toContain("TGCTO");
-    expect(msg.text).toContain("started / [TEL\\_17](https://paperclip.example/companies/abc/issues/TEL_17)");
+    expect(msg.text).toContain("started\n[TEL\\_17](https://paperclip.example/companies/abc/issues/TEL_17)");
     expect(msg.text).toContain("This markdown heavy title includes \\*asterisks\\*");
     expect(msg.text).toContain("\\.\\.\\.");
     expect(msg.text).not.toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
     expect(msg.text).not.toContain("intentionally long tail");
+    expect(msg.text.split("\n")).toHaveLength(2);
   });
 
   it("disables notification", () => {
@@ -416,11 +417,12 @@ describe("formatAgentRunFinished", () => {
       issuePrefix: "companies/abc",
     });
     expect(msg.text).toContain("TGCTO");
-    expect(msg.text).toContain("completed / [TEL\\_17](https://paperclip.example/companies/abc/issues/TEL_17)");
+    expect(msg.text).toContain("completed\n[TEL\\_17](https://paperclip.example/companies/abc/issues/TEL_17)");
     expect(msg.text).toContain("This markdown heavy title includes \\*asterisks\\*");
     expect(msg.text).toContain("\\.\\.\\.");
     expect(msg.text).not.toContain("[Run run\\-1](https://paperclip.example/agents/agent-1/runs/run-1)");
     expect(msg.text).not.toContain("intentionally long tail");
+    expect(msg.text.split("\n")).toHaveLength(2);
   });
 
   it("disables notification", () => {
