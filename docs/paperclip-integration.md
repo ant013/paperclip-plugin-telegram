@@ -106,29 +106,86 @@ Mapping is stored under instance state key `topic-map-<chatId>`. The plugin's
 notification dispatch will route project-scoped events to the matching topic.
 
 For an outbound `send_to_telegram` call you can also set `threadId: <forum
-topic id>` in `params` to target a specific topic explicitly. Outbound calls
-don't auto-route via project-key prefixes (see next section).
+topic id>` in `params` to target a specific topic explicitly.
 
-### 3. Issue identifier prefix (`GIM`, `TEL`, `UNS`, …)
+### 3. Issue identifier prefix (`GIM`, `TEL`, `UNS`, …) — `fileRoutes`
 
-The text prefix in identifiers like `GIM-272` / `TEL-25` / `UNS-9` is **not**
-used by the plugin for routing. It is metadata shown in notification headers
-and link text only.
+The Gimle fork (TEL-23) wires `issueIdentifier` prefix to a configurable
+per-project chat through `config.fileRoutes`. This lets every Paperclip project
+write into its own chat without any caller having to know the chat ID.
 
-| Project | Prefix | Company |
+Behaviour:
+
+- Caller passes `issueIdentifier: "GIM-272"` in `params`. The plugin extracts
+  the prefix with `parseProjectKeyFromIssueIdentifier` (regex
+  `^([A-Z][A-Z0-9]*)-\d+$`), giving `"GIM"`.
+- The plugin looks up `config.fileRoutes` for an enabled entry with matching
+  `projectKey` and uses its `chatId` (optionally `topicId`).
+- The response includes `routeSource: "file_route"` and the matched
+  `routeName` / `projectKey` so the caller can verify routing happened.
+
+Resolution precedence (first match wins):
+
+1. **`explicit`** — caller passed `chatId` and it's in `allowedTelegramChatIds`.
+2. **`file_route`** — `issueIdentifier` prefix matches an enabled `fileRoutes`
+   entry.
+3. **`legacy_fallback`** — falls through to per-company `telegram-chat` state
+   override, then `defaultChatId`.
+
+Error codes specific to file-route resolution:
+
+| Code | Meaning |
+|---|---|
+| `missing_destination` | No explicit chatId, no `issueIdentifier`, no per-company override, no `defaultChatId`. |
+| `missing_route_context` | `fileRoutes` configured but caller gave no `issueIdentifier` (or `issueId` that resolves to one) to match against. |
+| `unknown_project_route` | Prefix parsed, but no enabled `fileRoutes` entry has matching `projectKey`. |
+| `ambiguous_route` | More than one enabled entry matches the same `projectKey` (config error — fix by removing duplicates). |
+| `invalid_route_config` | `fileRoutes` array contains malformed entries (bad chatId/topicId/projectKey). |
+| `conflicting_destination` | Caller supplied both `explicit chatId` and `issueIdentifier` whose resolved route disagrees. |
+
+Example `fileRoutes` config:
+
+```json
+"fileRoutes": [
+  { "name": "Gimle files",          "projectKey": "GIM", "chatId": "-1003995931017", "topicId": "", "enabled": true },
+  { "name": "TelegramUpdate files", "projectKey": "TEL", "chatId": "-1003839195906", "topicId": "", "enabled": true },
+  { "name": "UAudit",               "projectKey": "UNS", "chatId": "-1003937871684", "topicId": "", "enabled": true }
+]
+```
+
+Edit via the plugin Settings UI (it has a File Routes section) or via
+`POST /api/plugins/<id>/config` with the full `configJson` body.
+
+| Project | Prefix | Company UUID |
 |---|---|---|
 | Gimle Palace | `GIM` | `9d8f432c-ff7d-4e3a-bbe3-3cd355f73b64` |
-| TelegramUpdate (this plugin's dev project) | `TEL` | `8810f36f-c9f1-4920-b9a1-d5f7a1db9484` |
+| TelegramUpdate | `TEL` | `8810f36f-c9f1-4920-b9a1-d5f7a1db9484` |
 | UnstoppableAudit | `UNS` | `8f55e80b-0264-4ab6-9d56-8b2652f18005` |
 | Medic | `MED` | `7c094d21-a02d-4554-8f35-730bf25ea492` |
 
-Different prefix → different `companyId` → different chat (assuming each
-company has been `/connect`-ed to its own chat). The plugin does not parse the
-prefix string; it follows the explicit `companyId` you pass in `params`.
+Pass `issueIdentifier: "GIM-272"` in the action body to both route the file AND
+display a clean header (`GIM-272 …`). The plugin enriches further with issue
+title/run link when resolvable from `issueId`.
 
-Pass `issueIdentifier: "GIM-272"` in the action body so the rendered message
-displays a clean header (`GIM-272 …`) instead of a raw UUID. The plugin will
-also enrich the message with issue title/run link when those are resolvable.
+### 3a. Ops events per company — `opsRoutes`
+
+Event-driven notifications (agent run start/finish, errors, escalations) carry
+a `companyId` but no `issueIdentifier`, so they cannot use `fileRoutes`.
+Instead, `config.opsRoutes` maps **company → chat** for the lifecycle path:
+
+```json
+"opsRoutes": [
+  { "name": "Gimle Ops",          "companyId": "9d8f432c-...", "companyName": "Gimle",          "chatId": "-1003521772993", "enabled": true },
+  { "name": "TelegramUpdate Ops", "companyId": "8810f36f-...", "companyName": "TelegramUpdate", "chatId": "-1003978140493", "enabled": true }
+]
+```
+
+`resolveTelegramOpsDestination` matches on `companyId` first, then falls back
+to `companyName` (so an entry without `companyId` but matching name still
+works). If no `opsRoutes` entry matches, the lifecycle event falls through to
+the same legacy chain as files (per-company `telegram-chat` state override →
+`defaultChatId`). `errorsChatId` / `approvalsChatId` etc. still apply on top
+as category-specific overrides.
 
 ### 4. Bot token and secret refs
 
