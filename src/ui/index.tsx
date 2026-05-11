@@ -53,6 +53,7 @@ type TelegramRoutingConfig = {
   topicRouting: boolean;
   maxAgentsPerThread: number;
   fileRoutes: TelegramFileRouteConfig[];
+  opsRoutes: TelegramOpsRouteConfig[];
   notifyOnIssueCreated: boolean;
   notifyOnIssueDone: boolean;
   notifyOnIssueAssigned: boolean;
@@ -78,6 +79,15 @@ type TelegramFileRouteConfig = {
   name: string;
   enabled: boolean;
   projectKey: string;
+  chatId: string;
+  topicId: string;
+};
+
+type TelegramOpsRouteConfig = {
+  name: string;
+  enabled: boolean;
+  companyId: string;
+  companyName: string;
   chatId: string;
   topicId: string;
 };
@@ -186,11 +196,73 @@ function getTelegramFileRouteSaveErrors(value: unknown): string[] {
   return errors;
 }
 
+function getTelegramOpsRouteSaveErrors(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return ["opsRoutes must be an array."];
+
+  const errors: string[] = [];
+  const enabledCompanyIds: string[] = [];
+  const enabledCompanyNames: string[] = [];
+  const enabledNames: string[] = [];
+
+  for (const [index, route] of value.entries()) {
+    if (typeof route !== "object" || route === null || Array.isArray(route)) {
+      errors.push("Enabled ops routes must be objects.");
+      continue;
+    }
+
+    const record = route as Record<string, unknown>;
+    if (record.enabled === false) continue;
+
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    const companyId = typeof record.companyId === "string" ? record.companyId.trim() : "";
+    const companyName = typeof record.companyName === "string" ? record.companyName.trim() : "";
+    const chatId = typeof record.chatId === "string" ? record.chatId.trim() : "";
+    const topicId = typeof record.topicId === "string" ? record.topicId.trim() : "";
+
+    if (!name) {
+      errors.push(`Route ${index + 1}: enabled ops routes need a name.`);
+    } else {
+      enabledNames.push(name);
+    }
+    if (!companyId && !companyName) {
+      errors.push(`Route ${index + 1}: enabled ops routes need either a Company ID or a Company name.`);
+    } else {
+      if (companyId) enabledCompanyIds.push(companyId);
+      if (companyName) enabledCompanyNames.push(companyName.toLowerCase());
+    }
+    if (!UI_CHAT_ID_PATTERN.test(chatId)) {
+      errors.push(`Route ${index + 1}: enabled ops routes need a numeric Telegram chat ID.`);
+    }
+    if (topicId && !UI_TOPIC_ID_PATTERN.test(topicId)) {
+      errors.push(`Route ${index + 1}: topic ID must be numeric when provided.`);
+    }
+  }
+
+  const duplicateCompanyIds = enabledCompanyIds.filter((id, index) => enabledCompanyIds.indexOf(id) !== index);
+  for (const companyId of [...new Set(duplicateCompanyIds)]) {
+    errors.push(`Enabled ops routes must not duplicate Company ID ${companyId}.`);
+  }
+
+  const duplicateCompanyNames = enabledCompanyNames.filter((name, index) => enabledCompanyNames.indexOf(name) !== index);
+  for (const companyName of [...new Set(duplicateCompanyNames)]) {
+    errors.push(`Enabled ops routes must not duplicate Company name ${companyName}.`);
+  }
+
+  const duplicateNames = enabledNames.filter((name, index) => enabledNames.indexOf(name) !== index);
+  for (const name of [...new Set(duplicateNames)]) {
+    errors.push(`Enabled ops route names must be unique: ${name}.`);
+  }
+
+  return errors;
+}
+
 const DEFAULT_ROUTING_CONFIG: TelegramRoutingConfig = {
   defaultChatId: "",
   topicRouting: false,
   maxAgentsPerThread: 5,
   fileRoutes: [],
+  opsRoutes: [],
   notifyOnIssueCreated: true,
   notifyOnIssueDone: true,
   notifyOnIssueAssigned: false,
@@ -323,6 +395,22 @@ function asFileRoutes(value: unknown): TelegramFileRouteConfig[] {
     }));
 }
 
+function asOpsRoutes(value: unknown): TelegramOpsRouteConfig[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> =>
+      typeof item === "object" && item !== null && !Array.isArray(item)
+    )
+    .map((route) => ({
+      name: asString(route.name),
+      enabled: asBoolean(route.enabled, true),
+      companyId: asString(route.companyId),
+      companyName: asString(route.companyName),
+      chatId: asString(route.chatId),
+      topicId: asString(route.topicId),
+    }));
+}
+
 function asDigestMode(value: unknown): TelegramRoutingConfig["digestMode"] {
   return value === "daily" || value === "bidaily" || value === "tridaily" ? value : "off";
 }
@@ -337,6 +425,7 @@ function extractRoutingConfig(config: Record<string, unknown>): TelegramRoutingC
     topicRouting: asBoolean(config.topicRouting, DEFAULT_ROUTING_CONFIG.topicRouting),
     maxAgentsPerThread: asNumber(config.maxAgentsPerThread, DEFAULT_ROUTING_CONFIG.maxAgentsPerThread),
     fileRoutes: asFileRoutes(config.fileRoutes),
+    opsRoutes: asOpsRoutes(config.opsRoutes),
     notifyOnIssueCreated: asBoolean(
       config.notifyOnIssueCreated,
       DEFAULT_ROUTING_CONFIG.notifyOnIssueCreated,
@@ -757,6 +846,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
   const fileRoutePreviewMatch = fileRoutePreviewProjectKey
     ? routingConfig.fileRoutes.find((route) => route.enabled && route.projectKey === fileRoutePreviewProjectKey)
     : null;
+  const opsRouteSaveErrors = getTelegramOpsRouteSaveErrors(routingConfig.opsRoutes);
 
   useEffect(() => {
     let cancelled = false;
@@ -1042,6 +1132,45 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setRoutingMessage(null);
   }
 
+  function updateOpsRoute(
+    index: number,
+    patch: Partial<TelegramOpsRouteConfig>,
+  ): void {
+    setRoutingConfig((current) => ({
+      ...current,
+      opsRoutes: current.opsRoutes.map((route, routeIndex) =>
+        routeIndex === index ? { ...route, ...patch } : route
+      ),
+    }));
+    setRoutingMessage(null);
+  }
+
+  function addOpsRoute(): void {
+    setRoutingConfig((current) => ({
+      ...current,
+      opsRoutes: [
+        ...current.opsRoutes,
+        {
+          name: "",
+          enabled: false,
+          companyId: "",
+          companyName: "",
+          chatId: "",
+          topicId: "",
+        },
+      ],
+    }));
+    setRoutingMessage(null);
+  }
+
+  function removeOpsRoute(index: number): void {
+    setRoutingConfig((current) => ({
+      ...current,
+      opsRoutes: current.opsRoutes.filter((_, routeIndex) => routeIndex !== index),
+    }));
+    setRoutingMessage(null);
+  }
+
   function updateBoardField<K extends keyof TelegramBoardConfig>(
     key: K,
     value: TelegramBoardConfig[K],
@@ -1145,6 +1274,16 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
         tone: "error",
         title: "File routes need attention",
         text: routeErrors.join(" "),
+      });
+      return;
+    }
+
+    const opsErrors = getTelegramOpsRouteSaveErrors(routingConfig.opsRoutes);
+    if (opsErrors.length > 0) {
+      setRoutingMessage({
+        tone: "error",
+        title: "Ops routes need attention",
+        text: opsErrors.join(" "),
       });
       return;
     }
@@ -1962,6 +2101,169 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
               padding: 12,
             }}
           >
+            <div style={{ alignItems: "center", display: "flex", gap: 12, justifyContent: "space-between" }}>
+              <div style={{ display: "grid", gap: 3 }}>
+                <strong>Ops</strong>
+                <span style={helperTextStyle}>
+                  Routes lifecycle notifications (agent run start/finish, digests, escalations) per company.
+                  Important events (issue created/done/errors/files) continue to use File Routes by project key.
+                </span>
+              </div>
+              <button
+                disabled={routingLoading || routingSaving}
+                onClick={addOpsRoute}
+                style={{
+                  background: buttonBackground,
+                  border: `1px solid ${borderColor}`,
+                  borderRadius: 8,
+                  color: textColor,
+                  cursor: routingLoading || routingSaving ? "not-allowed" : "pointer",
+                  fontWeight: 700,
+                  padding: "9px 12px",
+                }}
+                type="button"
+              >+ Add route</button>
+            </div>
+
+            {routingConfig.opsRoutes.length === 0 ? (
+              <div
+                style={{
+                  border: `1px dashed ${inputBorderColor}`,
+                  borderRadius: 8,
+                  color: mutedTextColor,
+                  fontSize: 13,
+                  padding: "9px 10px",
+                }}
+              >
+                No ops routes configured
+              </div>
+            ) : null}
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {routingConfig.opsRoutes.map((route, index) => (
+                <div
+                  key={index}
+                  style={{
+                    border: `1px solid ${borderColor}`,
+                    borderRadius: 8,
+                    display: "grid",
+                    gap: 10,
+                    padding: 10,
+                  }}
+                >
+                  <div style={{ alignItems: "center", display: "flex", gap: 10, justifyContent: "space-between" }}>
+                    <label style={{ alignItems: "center", color: textColor, display: "flex", fontSize: 13, gap: 8 }}>
+                      <input
+                        checked={route.enabled}
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateOpsRoute(index, { enabled: event.currentTarget.checked })}
+                        type="checkbox"
+                      />
+                      Enabled
+                    </label>
+                    <button
+                      disabled={routingLoading || routingSaving}
+                      onClick={() => removeOpsRoute(index)}
+                      style={{
+                        background: buttonBackground,
+                        border: `1px solid ${borderColor}`,
+                        borderRadius: 8,
+                        color: textColor,
+                        cursor: routingLoading || routingSaving ? "not-allowed" : "pointer",
+                        fontWeight: 700,
+                        padding: "8px 10px",
+                      }}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <div style={{ alignItems: "stretch", display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: mutedTextColor, fontSize: 12, fontWeight: 700 }}>Route name</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateOpsRoute(index, { name: event.currentTarget.value })}
+                        placeholder="Gimle Ops"
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.name}
+                      />
+                      <span style={helperTextStyle}>Operator-facing label for this ops route.</span>
+                    </label>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: mutedTextColor, fontSize: 12, fontWeight: 700 }}>Company ID</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateOpsRoute(index, { companyId: event.currentTarget.value })}
+                        placeholder="9d8f432c-..."
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.companyId}
+                      />
+                      <span style={helperTextStyle}>Paperclip company UUID. Preferred match.</span>
+                    </label>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: mutedTextColor, fontSize: 12, fontWeight: 700 }}>Company name</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateOpsRoute(index, { companyName: event.currentTarget.value })}
+                        placeholder="Gimle"
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.companyName}
+                      />
+                      <span style={helperTextStyle}>Used as fallback match when Company ID is missing.</span>
+                    </label>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: mutedTextColor, fontSize: 12, fontWeight: 700 }}>Chat ID</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateOpsRoute(index, { chatId: event.currentTarget.value })}
+                        placeholder="-1003521772993"
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.chatId}
+                      />
+                      <span style={helperTextStyle}>Destination chat for ops/lifecycle events.</span>
+                    </label>
+                    <label style={pairedFieldStyle}>
+                      <span style={{ color: mutedTextColor, fontSize: 12, fontWeight: 700 }}>Topic ID</span>
+                      <input
+                        disabled={routingLoading || routingSaving}
+                        onChange={(event) => updateOpsRoute(index, { topicId: event.currentTarget.value })}
+                        placeholder="1"
+                        style={standardInputStyle}
+                        type="text"
+                        value={route.topicId}
+                      />
+                      <span style={helperTextStyle}>Optional numeric forum topic.</span>
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {opsRouteSaveErrors.length > 0 ? (
+              <NoticeBlock
+                notice={{
+                  tone: "error",
+                  title: "Ops route validation",
+                  text: opsRouteSaveErrors.join(" "),
+                }}
+              />
+            ) : null}
+          </section>
+
+          <section
+            style={{
+              border: `1px solid ${borderColor}`,
+              borderRadius: 8,
+              display: "grid",
+              gap: 10,
+              padding: 12,
+            }}
+          >
             <strong>Issues</strong>
             <div style={{ display: "grid", gap: 10 }}>
               <label style={{ color: textColor, display: "grid", gap: 3, fontSize: 13 }}>
@@ -2256,16 +2558,16 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
             Reset
           </button>
           <button
-            disabled={routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0}
+            disabled={routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0 || opsRouteSaveErrors.length > 0}
             onClick={() => {
               void handleSaveRoutingConfig();
             }}
             style={{
-              background: routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0 ? "#9ca3af" : primaryButtonBackground,
+              background: routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0 || opsRouteSaveErrors.length > 0 ? "#9ca3af" : primaryButtonBackground,
               border: 0,
               borderRadius: 8,
               color: primaryButtonColor,
-              cursor: routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0 ? "not-allowed" : "pointer",
+              cursor: routingLoading || routingSaving || !routingDirty || fileRouteSaveErrors.length > 0 || opsRouteSaveErrors.length > 0 ? "not-allowed" : "pointer",
               fontWeight: 700,
               minWidth: 160,
               padding: "10px 14px",

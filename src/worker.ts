@@ -415,6 +415,92 @@ export async function resolveNotificationChatId(
   return resolveChat(ctx, companyId, fallback);
 }
 
+export type NotificationClassification = "important" | "ops";
+
+export type NotificationDestination = {
+  chatId: string;
+  topicId?: number;
+  routeSource: "explicit" | "file_route" | "ops_route" | "legacy_fallback";
+  routeName?: string;
+  projectKey?: string;
+};
+
+export async function resolveNotificationDestination(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  event: PluginEvent,
+  classification: NotificationClassification,
+  overrideChatId?: string,
+  overrideTopicId?: string,
+): Promise<NotificationDestination | null> {
+  const explicit = overrideChatId?.trim();
+  if (explicit) {
+    return {
+      chatId: explicit,
+      topicId: parseTopicId(overrideTopicId),
+      routeSource: "explicit",
+    };
+  }
+
+  if (classification === "important") {
+    const payload = event.payload as Record<string, unknown>;
+    const issueIdentifierFromPayload = asNonEmptyString(payload.issueIdentifier)
+      ?? asNonEmptyString(payload.identifier);
+    // Only fall back to issueId lookup when no identifier in payload — avoids
+    // unresolved_issue failures from upstream lookup glitches when we already
+    // know the identifier locally.
+    const issueIdForLookup = issueIdentifierFromPayload
+      ? undefined
+      : (asNonEmptyString(payload.issueId)
+          ?? (event.entityType === "issue" ? event.entityId : undefined));
+
+    if (issueIdentifierFromPayload || issueIdForLookup) {
+      const dest = await resolveTelegramFileDestination(config.fileRoutes, {
+        issueIdentifier: issueIdentifierFromPayload,
+        issueId: issueIdForLookup,
+        lookupIssueIdentifier: async (id) => {
+          try {
+            const issue = await ctx.issues.get(id, event.companyId);
+            return typeof issue?.identifier === "string" ? issue.identifier : null;
+          } catch {
+            return null;
+          }
+        },
+      });
+
+      if (dest.ok && dest.source === "file_route") {
+        return {
+          chatId: dest.chatId,
+          topicId: dest.topicId,
+          routeSource: "file_route",
+          routeName: dest.routeName,
+          projectKey: dest.projectKey,
+        };
+      }
+    }
+  }
+
+  const opsDest = await resolveOpsDestinationForEvent(ctx, config, event);
+  if (opsDest) {
+    return {
+      chatId: opsDest.chatId,
+      topicId: parseTopicId(opsDest.topicId),
+      routeSource: "ops_route",
+      routeName: opsDest.routeName,
+    };
+  }
+
+  const legacyChatId = await resolveChat(ctx, event.companyId, config.defaultChatId);
+  if (legacyChatId) {
+    return {
+      chatId: legacyChatId,
+      routeSource: "legacy_fallback",
+    };
+  }
+
+  return null;
+}
+
 function parseTopicId(value?: string): number | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -902,21 +988,38 @@ export const plugin = definePlugin({
     const notify = async (
       event: PluginEvent,
       formatter: (e: PluginEvent, opts?: IssueLinksOpts) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
+      classification: NotificationClassification,
       overrideChatId?: string,
       overrideTopicId?: string,
     ) => {
-      const chatId = await resolveNotificationChatId(
+      const dest = await resolveNotificationDestination(
         ctx,
-        event.companyId,
-        config.defaultChatId,
+        config,
+        event,
+        classification,
         overrideChatId,
+        overrideTopicId,
       );
-      if (!chatId) return;
+      if (!dest) return;
+      const chatId = dest.chatId;
+
+      ctx.logger.info("Telegram notification routing decision", {
+        eventType: event.eventType,
+        companyId: event.companyId,
+        entityId: event.entityId,
+        classification,
+        routeSource: dest.routeSource,
+        routeName: dest.routeName,
+        projectKey: dest.projectKey,
+        chatId,
+        topicId: dest.topicId,
+      });
+
       const linksOpts = await resolveIssueLinksOpts(event.companyId);
       const msg = formatter(event, linksOpts);
 
-      let messageThreadId = parseTopicId(overrideTopicId);
-      if (!messageThreadId) {
+      let messageThreadId = dest.topicId;
+      if (messageThreadId === undefined) {
         messageThreadId = await resolveNotificationThreadId(ctx, chatId, event, config.topicRouting);
       }
 
@@ -983,7 +1086,7 @@ export const plugin = definePlugin({
 
     if (config.notifyOnIssueCreated) {
       ctx.events.on("issue.created", (event: PluginEvent) =>
-        notify(event, formatIssueCreated),
+        notify(event, formatIssueCreated, "important"),
       );
     }
 
@@ -1012,7 +1115,7 @@ export const plugin = definePlugin({
             }
           } catch { /* best effort */ }
         }
-        await notify(event, formatIssueDone);
+        await notify(event, formatIssueDone, "important");
       });
     }
 
@@ -1054,7 +1157,7 @@ export const plugin = definePlugin({
           } catch { /* best effort */ }
         }
 
-        await notify(event, formatIssueAssigned);
+        await notify(event, formatIssueAssigned, "important");
       });
     }
 
@@ -1094,7 +1197,7 @@ export const plugin = definePlugin({
             ? `${approvalType} — ${agentLabel}`
             : approvalType;
         }
-        await notify(event, formatApprovalCreated, config.approvalsChatId, config.approvalsTopicId);
+        await notify(event, formatApprovalCreated, "important", config.approvalsChatId, config.approvalsTopicId);
       });
     }
 
@@ -1114,7 +1217,7 @@ export const plugin = definePlugin({
         const errorMessage = normalizeAgentErrorMessage(payload.error ?? payload.message);
         const dedupeKey = ["agent.run.failed", event.companyId, agentId, errorMessage].join(":");
         if (!agentErrorDedupe(dedupeKey)) return;
-        await notify(event, formatAgentError, config.errorsChatId, config.errorsTopicId);
+        await notify(event, formatAgentError, "important", config.errorsChatId, config.errorsTopicId);
       });
     }
 
@@ -1122,16 +1225,14 @@ export const plugin = definePlugin({
       ctx.events.on("agent.run.started", async (event: PluginEvent) => {
         await enrichAgentName(event, { fallbackToEntityId: true });
         await enrichRunIssueContext(ctx, event);
-        const opsDestination = await resolveOpsDestinationForEvent(ctx, config, event);
-        await notify(event, formatAgentRunStarted, opsDestination?.chatId, opsDestination?.topicId);
+        await notify(event, formatAgentRunStarted, "ops");
       });
     }
     if (config.notifyOnAgentRunFinished) {
       ctx.events.on("agent.run.finished", async (event: PluginEvent) => {
         await enrichAgentName(event, { fallbackToEntityId: true });
         await enrichRunIssueContext(ctx, event);
-        const opsDestination = await resolveOpsDestinationForEvent(ctx, config, event);
-        await notify(event, formatAgentRunFinished, opsDestination?.chatId, opsDestination?.topicId);
+        await notify(event, formatAgentRunFinished, "ops");
       });
     }
 
