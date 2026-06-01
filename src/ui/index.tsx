@@ -81,6 +81,7 @@ type TelegramFileRouteConfig = {
   projectKey: string;
   chatId: string;
   topicId: string;
+  sendImportant: boolean;
 };
 
 type TelegramOpsRouteConfig = {
@@ -392,6 +393,7 @@ function asFileRoutes(value: unknown): TelegramFileRouteConfig[] {
       projectKey: asString(route.projectKey).toUpperCase(),
       chatId: asString(route.chatId),
       topicId: asString(route.topicId),
+      sendImportant: asBoolean(route.sendImportant, true),
     }));
 }
 
@@ -1118,6 +1120,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
           projectKey: "",
           chatId: "",
           topicId: "",
+          sendImportant: true,
         },
       ],
     }));
@@ -1976,15 +1979,26 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                   }}
                 >
                   <div style={{ alignItems: "center", display: "flex", gap: 10, justifyContent: "space-between" }}>
-                    <label style={{ alignItems: "center", color: textColor, display: "flex", fontSize: 13, gap: 8 }}>
-                      <input
-                        checked={route.enabled}
-                        disabled={routingLoading || routingSaving}
-                        onChange={(event) => updateFileRoute(index, { enabled: event.currentTarget.checked })}
-                        type="checkbox"
-                      />
-                      Enabled
-                    </label>
+                    <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 16 }}>
+                      <label style={{ alignItems: "center", color: textColor, display: "flex", fontSize: 13, gap: 8 }}>
+                        <input
+                          checked={route.enabled}
+                          disabled={routingLoading || routingSaving}
+                          onChange={(event) => updateFileRoute(index, { enabled: event.currentTarget.checked })}
+                          type="checkbox"
+                        />
+                        Enabled
+                      </label>
+                      <label style={{ alignItems: "center", color: textColor, display: "flex", fontSize: 13, gap: 8 }}>
+                        <input
+                          checked={route.sendImportant}
+                          disabled={routingLoading || routingSaving}
+                          onChange={(event) => updateFileRoute(index, { sendImportant: event.currentTarget.checked })}
+                          type="checkbox"
+                        />
+                        Send important here
+                      </label>
+                    </div>
                     <button
                       disabled={routingLoading || routingSaving}
                       onClick={() => removeFileRoute(index)}
@@ -2002,6 +2016,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
                       Remove
                     </button>
                   </div>
+                  <span style={helperTextStyle}>
+                    When off, important alerts (issue done/assigned, approvals, run failures) are diverted to the Ops route; this chat receives files only.
+                  </span>
                   <div style={{ alignItems: "stretch", display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
                     <label style={pairedFieldStyle}>
                       <span style={{ color: mutedTextColor, fontSize: 12, fontWeight: 700 }}>Route name</span>

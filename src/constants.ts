@@ -33,6 +33,9 @@ export const DEFAULT_CONFIG = {
     projectKey: string;
     chatId: string;
     topicId?: string;
+    // Default true. When false, important notifications for this route's
+    // project are diverted to the ops route and the chat receives files only.
+    sendImportant?: boolean;
   }>,
   opsRoutes: [] as Array<{
     name: string;

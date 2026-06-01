@@ -468,7 +468,10 @@ export async function resolveNotificationDestination(
         },
       });
 
-      if (dest.ok && dest.source === "file_route") {
+      // Honor the per-route sendImportant opt-out: when false, important
+      // notifications skip this file route and fall through to the ops route
+      // (so the file chat receives files only).
+      if (dest.ok && dest.source === "file_route" && dest.sendImportant !== false) {
         return {
           chatId: dest.chatId,
           topicId: dest.topicId,

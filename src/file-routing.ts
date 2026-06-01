@@ -4,6 +4,7 @@ export type TelegramFileRoute = {
   projectKey?: unknown;
   chatId?: unknown;
   topicId?: unknown;
+  sendImportant?: unknown;
 };
 
 export type NormalizedTelegramFileRoute = {
@@ -11,6 +12,10 @@ export type NormalizedTelegramFileRoute = {
   projectKey: string;
   chatId: string;
   topicId?: number;
+  // When false, important notifications matching this route are diverted to the
+  // ops route instead of this chat (the chat then receives files only).
+  // Defaults to true so existing routes keep their current behavior.
+  sendImportant: boolean;
 };
 
 export type FileRouteValidationIssue = {
@@ -34,6 +39,9 @@ export type TelegramFileDestination =
     routeName?: string;
     projectKey?: string;
     issueIdentifier?: string;
+    // Present for file_route results: whether important notifications should be
+    // delivered to this chat (true) or diverted to the ops route (false).
+    sendImportant?: boolean;
   }
   | {
     ok: false;
@@ -142,6 +150,7 @@ export function validateTelegramFileRoutes(value: unknown): FileRouteValidationR
         projectKey,
         chatId,
         topicId: rawTopicId ? Number(rawTopicId) : undefined,
+        sendImportant: route.sendImportant !== false,
       });
     }
   }
@@ -235,6 +244,7 @@ export async function resolveTelegramFileDestination(
     routeName: route.name,
     projectKey: route.projectKey,
     issueIdentifier: routeContext.issueIdentifier,
+    sendImportant: route.sendImportant,
   };
 }
 

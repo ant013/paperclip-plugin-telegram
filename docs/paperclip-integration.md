@@ -187,6 +187,30 @@ the same legacy chain as files (per-company `telegram-chat` state override →
 `defaultChatId`). `errorsChatId` / `approvalsChatId` etc. still apply on top
 as category-specific overrides.
 
+### 3b. Files-only file routes — `sendImportant`
+
+By default a file route's chat receives **both** the project's Markdown files
+**and** its important notifications (issue done/assigned, approval created,
+agent run failed) — those `important` events resolve to the matching
+`fileRoutes` entry by `projectKey`.
+
+Set `"sendImportant": false` on a file route to make that chat **files-only**:
+important notifications for the route's project are diverted to the company's
+`opsRoutes` chat instead (falling back to the legacy chain if no ops route
+matches). File/document delivery to the chat is unaffected. The field defaults
+to `true`, so existing routes keep their current behaviour.
+
+```json
+"fileRoutes": [
+  { "name": "Gimle files", "projectKey": "GIM", "chatId": "-1003995931017", "topicId": "", "enabled": true, "sendImportant": true },
+  { "name": "UAudit",      "projectKey": "UNS", "chatId": "-1003937871684", "topicId": "", "enabled": true, "sendImportant": false }
+]
+```
+
+In the example above the UAudit chat receives only Markdown files; `UNS-*`
+important alerts route to the `UAudit Ops` chat. Toggle it via the **Send
+important here** checkbox in the File Routes section of the plugin Settings UI.
+
 ### 4. Bot token and secret refs
 
 The Telegram bot token is stored as a Paperclip Secret. The plugin holds only

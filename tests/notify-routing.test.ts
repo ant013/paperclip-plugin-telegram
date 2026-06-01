@@ -309,4 +309,99 @@ describe("resolveNotificationDestination", () => {
       expect(dest?.routeSource).toBe("ops_route");
     });
   });
+
+  describe("sendImportant flag (per file-route)", () => {
+    const UNS_OPS = {
+      name: "UAudit Ops",
+      companyId: UNS_COMPANY_ID,
+      companyName: "UAudit",
+      chatId: "-1003534905521",
+      enabled: true,
+    };
+
+    it("diverts important events to ops_route when the matched file route has sendImportant=false", async () => {
+      const ctx = mockCtx();
+      const dest = await resolveNotificationDestination(
+        ctx,
+        mockConfig({
+          fileRoutes: [
+            { name: "UAudit", projectKey: "UNS", chatId: "-1003937871684", enabled: true, sendImportant: false },
+          ],
+          opsRoutes: [UNS_OPS],
+        }) as never,
+        makeEvent({ companyId: UNS_COMPANY_ID, payload: { identifier: "UNS-99" } }),
+        "important",
+      );
+      expect(dest?.routeSource).toBe("ops_route");
+      expect(dest?.chatId).toBe("-1003534905521");
+    });
+
+    it("falls through to legacy_fallback when sendImportant=false and no ops route matches", async () => {
+      const ctx = mockCtx();
+      const dest = await resolveNotificationDestination(
+        ctx,
+        mockConfig({
+          fileRoutes: [
+            { name: "UAudit", projectKey: "UNS", chatId: "-1003937871684", enabled: true, sendImportant: false },
+          ],
+          opsRoutes: [],
+        }) as never,
+        makeEvent({ companyId: UNS_COMPANY_ID, payload: { identifier: "UNS-99" } }),
+        "important",
+      );
+      expect(dest?.routeSource).toBe("legacy_fallback");
+      expect(dest?.chatId).toBe(DEFAULT_CHAT);
+    });
+
+    it("keeps important events on file_route when sendImportant=true (explicit)", async () => {
+      const ctx = mockCtx();
+      const dest = await resolveNotificationDestination(
+        ctx,
+        mockConfig({
+          fileRoutes: [
+            { name: "UAudit", projectKey: "UNS", chatId: "-1003937871684", enabled: true, sendImportant: true },
+          ],
+          opsRoutes: [UNS_OPS],
+        }) as never,
+        makeEvent({ companyId: UNS_COMPANY_ID, payload: { identifier: "UNS-99" } }),
+        "important",
+      );
+      expect(dest?.routeSource).toBe("file_route");
+      expect(dest?.chatId).toBe("-1003937871684");
+    });
+
+    it("defaults to file_route (sendImportant true) when the field is omitted", async () => {
+      const ctx = mockCtx();
+      const dest = await resolveNotificationDestination(
+        ctx,
+        mockConfig({
+          fileRoutes: [
+            { name: "UAudit", projectKey: "UNS", chatId: "-1003937871684", enabled: true },
+          ],
+          opsRoutes: [UNS_OPS],
+        }) as never,
+        makeEvent({ companyId: UNS_COMPANY_ID, payload: { identifier: "UNS-99" } }),
+        "important",
+      );
+      expect(dest?.routeSource).toBe("file_route");
+      expect(dest?.chatId).toBe("-1003937871684");
+    });
+
+    it("does not affect ops classification (ops events never consult fileRoutes)", async () => {
+      const ctx = mockCtx();
+      const dest = await resolveNotificationDestination(
+        ctx,
+        mockConfig({
+          fileRoutes: [
+            { name: "UAudit", projectKey: "UNS", chatId: "-1003937871684", enabled: true, sendImportant: false },
+          ],
+          opsRoutes: [UNS_OPS],
+        }) as never,
+        makeEvent({ companyId: UNS_COMPANY_ID, eventType: "agent.run.started" }),
+        "ops",
+      );
+      expect(dest?.routeSource).toBe("ops_route");
+      expect(dest?.chatId).toBe("-1003534905521");
+    });
+  });
 });
