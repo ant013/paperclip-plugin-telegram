@@ -58,6 +58,38 @@ const defaultConfig: Config = {
   allowedTelegramChatIds: [],
 };
 
+const telRouteConfig: Config = {
+  ...defaultConfig,
+  fileRoutes: [
+    { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002", topicId: "44" },
+  ],
+};
+
+const wrongTypeRouteCases = ["projectKey", "issueIdentifier", "issueId"].flatMap((field) => [
+  { field, kind: "number", value: 123 },
+  { field, kind: "boolean", value: true },
+  { field, kind: "array", value: ["TEL"] },
+  { field, kind: "object", value: { value: "TEL" } },
+]);
+
+function expectNoTelegramCalls(): void {
+  expect(telegramApi.sendMessage).not.toHaveBeenCalled();
+  expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+}
+
+function mockCalls(fn: unknown): unknown[][] {
+  return (fn as { mock?: { calls?: unknown[][] } }).mock?.calls ?? [];
+}
+
+function serializedAuditOutput(ctx: PluginContext): string {
+  return JSON.stringify([
+    mockCalls(ctx.logger.info),
+    mockCalls(ctx.logger.warn),
+    mockCalls(ctx.logger.error),
+    mockCalls(ctx.activity.log),
+  ]);
+}
+
 async function runSendToTelegram(
   params: Record<string, unknown>,
   config: Config,
@@ -82,7 +114,13 @@ describe("sendToTelegramTool", () => {
     const ctx = createContext(async () => ({ ok: true }) as Response);
     const result = await runSendToTelegram({ text: "hello world" }, defaultConfig, ctx);
 
-    expect(result.data).toMatchObject({ ok: true, mode: "message", chatId: "-1001", messageId: 101 });
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "message",
+      chatId: "-1001",
+      messageId: 101,
+      routeSource: "legacy_fallback",
+    });
     expect(result.data).toHaveProperty("mode", "message");
     expect(telegramApi.sendMessage).toHaveBeenCalledWith(
       ctx,
@@ -431,36 +469,353 @@ describe("sendToTelegramTool", () => {
     });
   });
 
-  it("leaves text-only sends on legacy fallback even when route fields are provided", async () => {
+  it("routes text-only sends by projectKey and returns route metadata", async () => {
     const ctx = createContext(async () => ({ ok: true }) as Response);
     const result = await runSendToTelegram(
       {
         text: "hello TEL",
-        projectKey: "TEL",
+        projectKey: "tel",
       },
-      {
-        ...defaultConfig,
-        fileRoutes: [
-          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "-2002", topicId: "44" },
-        ],
-      },
+      telRouteConfig,
       ctx,
     );
 
     expect(result.data).toMatchObject({
       ok: true,
       mode: "message",
-      chatId: "-1001",
-      routeSource: "legacy_fallback",
+      chatId: "-2002",
+      threadId: 44,
+      routeSource: "file_route",
+      routeName: "TEL files",
+      projectKey: "TEL",
+      messageId: 101,
     });
     expect(telegramApi.sendMessage).toHaveBeenCalledWith(
       ctx,
       "resolved-token",
-      "-1001",
+      "-2002",
       "hello TEL",
-      expect.objectContaining({ messageThreadId: undefined }),
+      expect.objectContaining({ messageThreadId: 44 }),
     );
     expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("routes text-only sends by issueIdentifier", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      { text: "hello TEL issue", issueIdentifier: "tel-23" },
+      telRouteConfig,
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "message",
+      chatId: "-2002",
+      threadId: 44,
+      routeSource: "file_route",
+      routeName: "TEL files",
+      projectKey: "TEL",
+      issueIdentifier: "TEL-23",
+      messageId: 101,
+    });
+    expect(telegramApi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("resolves issueId within the current company before routing text-only sends", async () => {
+    const ctx = {
+      ...createContext(async () => ({ ok: true }) as Response),
+      issues: {
+        get: vi.fn(async (issueId: string, companyId: string) => ({
+          id: issueId,
+          companyId,
+          identifier: "TEL-23",
+          title: "Route text",
+        })),
+      },
+    } as unknown as PluginContext;
+
+    const result = await runSendToTelegram(
+      { text: "hello resolved issue", issueId: "issue-23" },
+      telRouteConfig,
+      ctx,
+    );
+
+    expect(ctx.issues.get).toHaveBeenCalledWith("issue-23", "company-1");
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "message",
+      chatId: "-2002",
+      routeSource: "file_route",
+      routeName: "TEL files",
+      projectKey: "TEL",
+      issueIdentifier: "TEL-23",
+    });
+    expect(telegramApi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "text", content: { text: "agreeing text route" }, mode: "message" },
+    { label: "document", content: { markdownContent: "# Agreeing route" }, mode: "document" },
+  ])("accepts agreeing multi-field route context for $label", async ({ content, mode }) => {
+    const ctx = {
+      ...createContext(async () => ({ ok: true }) as Response),
+      issues: {
+        get: vi.fn(async (issueId: string, companyId: string) => ({
+          id: issueId,
+          companyId,
+          identifier: "TEL-23",
+          title: "Agreeing route",
+        })),
+      },
+    } as unknown as PluginContext;
+
+    const result = await runSendToTelegram(
+      {
+        ...content,
+        projectKey: "tel",
+        issueIdentifier: "tel-23",
+        issueId: "issue-23",
+      },
+      telRouteConfig,
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode,
+      chatId: "-2002",
+      routeSource: "file_route",
+      routeName: "TEL files",
+      projectKey: "TEL",
+      issueIdentifier: "TEL-23",
+    });
+    expect(ctx.issues.get).toHaveBeenCalledWith("issue-23", "company-1");
+    if (mode === "message") {
+      expect(telegramApi.sendMessage).toHaveBeenCalledTimes(1);
+      expect(telegramApi.sendDocument).not.toHaveBeenCalled();
+    } else {
+      expect(telegramApi.sendDocument).toHaveBeenCalledTimes(1);
+      expect(telegramApi.sendMessage).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    { label: "text", content: { text: "conflicting text route" } },
+    { label: "document", content: { markdownContent: "# Conflicting route" } },
+  ])("rejects conflicting projectKey and issueIdentifier for $label", async ({ content }) => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      { ...content, projectKey: "TEL", issueIdentifier: "OPS-1" },
+      telRouteConfig,
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({ ok: false, code: "conflicting_route_context" });
+    expectNoTelegramCalls();
+  });
+
+  it("rejects an explicit issueIdentifier that disagrees with resolved issueId", async () => {
+    const ctx = {
+      ...createContext(async () => ({ ok: true }) as Response),
+      issues: {
+        get: vi.fn(async (issueId: string, companyId: string) => ({
+          id: issueId,
+          companyId,
+          identifier: "TEL-23",
+          title: "Conflicting route",
+        })),
+      },
+    } as unknown as PluginContext;
+
+    const result = await runSendToTelegram(
+      {
+        text: "conflicting issue ids",
+        issueId: "issue-23",
+        issueIdentifier: "TEL-24",
+      },
+      telRouteConfig,
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({ ok: false, code: "conflicting_route_context" });
+    expect(ctx.issues.get).toHaveBeenCalledWith("issue-23", "company-1");
+    expectNoTelegramCalls();
+  });
+
+  it.each(wrongTypeRouteCases)(
+    "rejects wrong-type route context: $field ($kind)",
+    async ({ field, value }) => {
+      const ctx = createContext(async () => ({ ok: true }) as Response);
+      const result = await runSendToTelegram(
+        { text: "wrong type route", [field]: value },
+        telRouteConfig,
+        ctx,
+      );
+
+      expect(result.data).toMatchObject({
+        ok: false,
+        code: "invalid_route_context",
+        invalidField: field,
+      });
+      expect(ctx.logger.info).toHaveBeenCalledWith(
+        "Telegram agent send routing decision",
+        expect.objectContaining({
+          contentMode: "message",
+          errorCode: "invalid_route_context",
+          invalidField: field,
+        }),
+      );
+      expectNoTelegramCalls();
+    },
+  );
+
+  it.each(["projectKey", "issueIdentifier", "issueId"])(
+    "rejects and redacts oversized %s",
+    async (field) => {
+      const marker = `SECRET_OVERSIZED_${field}`;
+      const ctx = createContext(async () => ({ ok: true }) as Response);
+      const result = await runSendToTelegram(
+        { text: "oversized route", [field]: `${marker}${"X".repeat(256)}` },
+        telRouteConfig,
+        ctx,
+      );
+
+      expect(result.data).toMatchObject({
+        ok: false,
+        code: "invalid_route_context",
+        invalidField: field,
+      });
+      expect(ctx.logger.info).toHaveBeenCalledWith(
+        "Telegram agent send routing decision",
+        expect.objectContaining({
+          contentMode: "message",
+          errorCode: "invalid_route_context",
+          invalidField: field,
+        }),
+      );
+      expect(JSON.stringify(result)).not.toContain(marker);
+      expect(serializedAuditOutput(ctx)).not.toContain(marker);
+      expectNoTelegramCalls();
+    },
+  );
+
+  it.each(["projectKey", "issueIdentifier", "issueId"])(
+    "rejects and redacts control characters in %s",
+    async (field) => {
+      const marker = `SECRET_CONTROL_${field}`;
+      const ctx = createContext(async () => ({ ok: true }) as Response);
+      const result = await runSendToTelegram(
+        { text: "control route", [field]: `TEL\n${marker}` },
+        telRouteConfig,
+        ctx,
+      );
+
+      expect(result.data).toMatchObject({
+        ok: false,
+        code: "invalid_route_context",
+        invalidField: field,
+      });
+      expect(ctx.logger.info).toHaveBeenCalledWith(
+        "Telegram agent send routing decision",
+        expect.objectContaining({
+          contentMode: "message",
+          errorCode: "invalid_route_context",
+          invalidField: field,
+        }),
+      );
+      expect(JSON.stringify(result)).not.toContain(marker);
+      expect(serializedAuditOutput(ctx)).not.toContain(marker);
+      expectNoTelegramCalls();
+    },
+  );
+
+  it.each([
+    { field: "chatId", value: { raw: "chat" } },
+    { field: "chatId", value: 123 },
+    { field: "threadId", value: "not-a-thread" },
+    { field: "threadId", value: { raw: "thread" } },
+  ])("rejects valid route context mixed with raw explicit $field intent", async ({ field, value }) => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      { text: "mixed destination", projectKey: "TEL", [field]: value },
+      telRouteConfig,
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({ ok: false, code: "conflicting_destination" });
+    expectNoTelegramCalls();
+  });
+
+  it("checks mixed-destination conflict before resolving issueId", async () => {
+    const ctx = {
+      ...createContext(async () => ({ ok: true }) as Response),
+      issues: {
+        get: vi.fn(async () => null),
+      },
+    } as unknown as PluginContext;
+
+    const result = await runSendToTelegram(
+      { text: "mixed unresolved issue", issueId: "missing-issue", chatId: "-1001" },
+      { ...telRouteConfig, allowedTelegramChatIds: ["-1001"] },
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({ ok: false, code: "conflicting_destination" });
+    expect(ctx.issues.get).not.toHaveBeenCalled();
+    expectNoTelegramCalls();
+  });
+
+  it("reports malformed route context before mixed-destination conflict", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      { text: "invalid route first", projectKey: "TEL!", threadId: 44 },
+      telRouteConfig,
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({ ok: false, code: "invalid_route_context" });
+    expectNoTelegramCalls();
+  });
+
+  it.each([
+    {
+      label: "unknown route",
+      params: { text: "unknown route", issueIdentifier: "OPS-1" },
+      config: telRouteConfig,
+      code: "unknown_project_route",
+    },
+    {
+      label: "ambiguous route",
+      params: { text: "ambiguous route", projectKey: "TEL" },
+      config: {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL A", enabled: true, projectKey: "TEL", chatId: "-2002" },
+          { name: "TEL B", enabled: true, projectKey: "TEL", chatId: "-3003" },
+        ],
+      },
+      code: "ambiguous_route",
+    },
+    {
+      label: "invalid route config",
+      params: { text: "invalid config", projectKey: "TEL" },
+      config: {
+        ...defaultConfig,
+        fileRoutes: [
+          { name: "TEL files", enabled: true, projectKey: "TEL", chatId: "not-a-chat" },
+        ],
+      },
+      code: "invalid_route_config",
+    },
+  ])("fails closed for text-only $label", async ({ params, config, code }) => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(params, config, ctx);
+
+    expect(result.data).toMatchObject({ ok: false, code });
+    expectNoTelegramCalls();
   });
 
   it("rejects explicit disallowed chat ids before Telegram API calls", async () => {

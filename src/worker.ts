@@ -52,7 +52,11 @@ import { validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import { displayNameFromFields, resolveAgentDisplayName, type AgentLabelCache } from "./agent-labels.js";
-import { resolveTelegramFileDestination, type TelegramFileRoute } from "./file-routing.js";
+import {
+  resolveTelegramFileDestination,
+  type RouteContextField,
+  type TelegramFileRoute,
+} from "./file-routing.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
@@ -520,6 +524,7 @@ type SendToTelegramResult = {
   routeName?: string;
   projectKey?: string;
   issueIdentifier?: string;
+  invalidField?: RouteContextField;
 };
 
 function validateOutboundThreadId(value: unknown): number | "invalid" | undefined {
@@ -577,13 +582,6 @@ export async function sendToTelegramTool(
     return { content: JSON.stringify(result), data: result };
   }
 
-  const explicitChatId = asNonEmptyString(p.chatId);
-  const threadId = validateOutboundThreadId(p.threadId);
-  if (threadId === "invalid") {
-    const result = makeTelegramToolError("invalid_thread", "threadId must be a positive integer.");
-    return { content: JSON.stringify(result), data: result };
-  }
-
   const replyToMessageId = validateOutboundThreadId(p.replyToMessageId);
   if (replyToMessageId === "invalid") {
     const result = makeTelegramToolError("invalid_thread", "replyToMessageId must be a positive integer.");
@@ -615,35 +613,41 @@ export async function sendToTelegramTool(
     }
   }
 
-  const destination = markdownContent
-    ? await resolveTelegramFileDestination(config.fileRoutes, {
-      explicitChatId,
-      explicitThreadId: typeof threadId === "number" ? threadId : undefined,
-      issueId: asNonEmptyString(p.issueId),
-      issueIdentifier: asNonEmptyString(p.issueIdentifier),
-      projectKey: asNonEmptyString(p.projectKey),
-      lookupIssueIdentifier: (issueId) => resolveIssueIdentifierForFileRoute(ctx, runCtx.companyId, issueId),
-    })
-    : null;
+  const destination = await resolveTelegramFileDestination(config.fileRoutes, {
+    explicitChatId: p.chatId,
+    explicitThreadId: p.threadId,
+    issueId: p.issueId,
+    issueIdentifier: p.issueIdentifier,
+    projectKey: p.projectKey,
+    lookupIssueIdentifier: (issueId) => resolveIssueIdentifierForFileRoute(ctx, runCtx.companyId, issueId),
+  });
 
-  if (destination && !destination.ok) {
+  if (!destination.ok) {
     const result = makeTelegramToolError(destination.code, destination.message, {
       projectKey: destination.projectKey,
       issueIdentifier: destination.issueIdentifier,
+      invalidField: destination.invalidField,
     });
     await logSendToTelegramAttempt(ctx, runCtx, {
-      params: p,
       mode: markdownContent ? "document" : "message",
       routeSource: "file_route",
       projectKey: destination.projectKey,
       issueIdentifier: destination.issueIdentifier,
+      invalidField: destination.invalidField,
       errorCode: destination.code,
     });
     return { content: JSON.stringify(result), data: result };
   }
 
-  const routeSource = destination?.ok ? destination.source : explicitChatId ? "explicit" : "legacy_fallback";
-  const chatId = destination?.ok && destination.source === "file_route"
+  const explicitChatId = asNonEmptyString(p.chatId);
+  const threadId = validateOutboundThreadId(p.threadId);
+  if (threadId === "invalid") {
+    const result = makeTelegramToolError("invalid_thread", "threadId must be a positive integer.");
+    return { content: JSON.stringify(result), data: result };
+  }
+
+  const routeSource = destination.source;
+  const chatId = destination.source === "file_route"
     ? destination.chatId
     : explicitChatId ?? await resolveChat(ctx, runCtx.companyId, config.defaultChatId);
   if (!chatId) {
@@ -665,7 +669,7 @@ export async function sendToTelegramTool(
     }
   }
 
-  const outboundThreadId = destination?.ok && destination.source === "file_route"
+  const outboundThreadId = destination.source === "file_route"
     ? destination.topicId
     : threadId;
   const result = markdownContent
@@ -687,9 +691,9 @@ export async function sendToTelegramTool(
         threadId: outboundThreadId,
         messageId,
         routeSource,
-        routeName: destination?.ok ? destination.routeName : undefined,
-        projectKey: destination?.ok ? destination.projectKey : undefined,
-        issueIdentifier: destination?.ok ? destination.issueIdentifier : undefined,
+        routeName: destination.routeName,
+        projectKey: destination.projectKey,
+        issueIdentifier: destination.issueIdentifier,
       } as const;
     })
     : await sendMessage(ctx, token, chatId, text!, {
@@ -708,19 +712,21 @@ export async function sendToTelegramTool(
         threadId: outboundThreadId,
         messageId,
         routeSource,
+        routeName: destination.routeName,
+        projectKey: destination.projectKey,
+        issueIdentifier: destination.issueIdentifier,
       } as const;
     });
 
   if (!result.ok) {
     await logSendToTelegramAttempt(ctx, runCtx, {
-      params: p,
       mode: markdownContent ? "document" : "message",
       chatId,
       threadId: outboundThreadId,
       routeSource,
-      routeName: destination?.ok ? destination.routeName : undefined,
-      projectKey: destination?.ok ? destination.projectKey : undefined,
-      issueIdentifier: destination?.ok ? destination.issueIdentifier : undefined,
+      routeName: destination.routeName,
+      projectKey: destination.projectKey,
+      issueIdentifier: destination.issueIdentifier,
       errorCode: result.code,
     });
     return { content: JSON.stringify(result), data: result };
@@ -744,10 +750,10 @@ export async function sendToTelegramTool(
       mode: result.mode,
       messageId: result.messageId,
       routeSource: result.routeSource,
-      routeName: destination?.ok ? destination.routeName : undefined,
-      projectKey: destination?.ok ? destination.projectKey : undefined,
+      routeName: destination.routeName,
+      projectKey: destination.projectKey,
       issueId: asNonEmptyString(p.issueId) ?? undefined,
-      issueIdentifier: destination?.ok ? destination.issueIdentifier : asNonEmptyString(p.issueIdentifier) ?? undefined,
+      issueIdentifier: destination.issueIdentifier ?? asNonEmptyString(p.issueIdentifier) ?? undefined,
     },
   });
 
@@ -774,7 +780,6 @@ async function logSendToTelegramAttempt(
   ctx: PluginContext,
   runCtx: { companyId: string; agentId: string },
   details: {
-    params: Record<string, unknown>;
     mode: "message" | "document";
     routeSource: "explicit" | "file_route" | "legacy_fallback";
     routeName?: string;
@@ -782,15 +787,16 @@ async function logSendToTelegramAttempt(
     threadId?: number;
     projectKey?: string;
     issueIdentifier?: string;
+    invalidField?: RouteContextField;
     errorCode?: string;
   },
 ): Promise<void> {
   ctx.logger.info("Telegram agent send routing decision", {
     companyId: runCtx.companyId,
     agentId: runCtx.agentId,
-    issueId: asNonEmptyString(details.params.issueId) ?? undefined,
-    issueIdentifier: details.issueIdentifier ?? asNonEmptyString(details.params.issueIdentifier) ?? undefined,
-    projectKey: details.projectKey ?? asNonEmptyString(details.params.projectKey) ?? undefined,
+    issueIdentifier: details.issueIdentifier,
+    projectKey: details.projectKey,
+    invalidField: details.invalidField,
     routeSource: details.routeSource,
     routeName: details.routeName,
     chatId: details.chatId,
@@ -803,7 +809,7 @@ async function logSendToTelegramAttempt(
 function makeTelegramToolError(
   code: string,
   message: string,
-  metadata: Pick<SendToTelegramResult, "projectKey" | "issueIdentifier"> = {},
+  metadata: Pick<SendToTelegramResult, "projectKey" | "issueIdentifier" | "invalidField"> = {},
 ): SendToTelegramResult {
   return { ok: false, code, message, ...metadata };
 }
@@ -1553,15 +1559,15 @@ export const plugin = definePlugin({
           },
           projectKey: {
             type: "string",
-            description: "Optional Paperclip project key for Markdown document file routing, such as TEL.",
+            description: "Optional Paperclip project key for route-aware text or Markdown delivery, such as TEL.",
           },
           issueIdentifier: {
             type: "string",
-            description: "Optional Paperclip issue key for Markdown document file routing, such as TEL-8.",
+            description: "Optional Paperclip issue key for route-aware text or Markdown delivery, such as TEL-8.",
           },
           issueId: {
             type: "string",
-            description: "Optional Paperclip issue ID used to resolve a project-key file route.",
+            description: "Optional Paperclip issue ID used to resolve a project route.",
           },
           parseMode: {
             type: "string",
@@ -1614,15 +1620,15 @@ export const plugin = definePlugin({
           },
           projectKey: {
             type: "string",
-            description: "Optional Paperclip project key for Markdown document file routing, such as TEL.",
+            description: "Optional Paperclip project key for route-aware text or Markdown delivery, such as TEL.",
           },
           issueIdentifier: {
             type: "string",
-            description: "Optional Paperclip issue key for Markdown document file routing, such as TEL-8.",
+            description: "Optional Paperclip issue key for route-aware text or Markdown delivery, such as TEL-8.",
           },
           issueId: {
             type: "string",
-            description: "Optional Paperclip issue ID used to resolve a project-key file route.",
+            description: "Optional Paperclip issue ID used to resolve a project route.",
           },
           parseMode: {
             type: "string",

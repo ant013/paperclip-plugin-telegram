@@ -193,7 +193,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `onlyNotifyBoardApprovals` | No | When enabled, send Telegram approval notifications only for `request_board_approval` approvals |
 | `allowedTelegramUserIds` | No | Optional allowlist of Telegram user IDs allowed to use commands, inbound replies, media intake, and inline buttons. Empty means any user is allowed |
 | `allowedTelegramChatIds` | No | Optional allowlist of Telegram **inbound** chat IDs where commands, inbound replies, media intake, and inline buttons are accepted. Empty means any chat is allowed |
-| `fileRoutes` | No | Agent Markdown document routes keyed by Paperclip project key, for example `TEL -> Telegram chat/topic` |
+| `fileRoutes` | No | Agent action routes for text messages and Markdown documents, keyed by Paperclip project key, for example `TEL -> Telegram chat/topic` |
 | `topicRouting` | No | Map forum topics to projects (default: false) |
 | `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
 | `dailyDigestTime` | No | UTC time for digest, HH:MM (default: 09:00) |
@@ -240,9 +240,10 @@ Outbound rules:
 
 The allowlist is only an outbound gate for explicit `chatId`; it is not a global override for all outbound sends.
 
-### Project-key file routes
+### Project-key action routes
 
-Use the **Files** section in plugin settings, or configure `fileRoutes`, to route agent-sent Markdown documents by Paperclip project key:
+Use the **Files** section in plugin settings, or configure `fileRoutes`, to route
+agent-sent text messages and Markdown documents by Paperclip project key:
 
 ```json
 {
@@ -258,9 +259,42 @@ Use the **Files** section in plugin settings, or configure `fileRoutes`, to rout
 }
 ```
 
-Only `send_to_telegram` / `send_file_to_telegram` calls with `markdownContent` use file routes. Route context can be passed as `projectKey`, `issueIdentifier` such as `TEL-23`, or `issueId`. Text-only sends keep the existing default/company chat fallback behavior.
+Both aliases use file routes whenever a call supplies route context through
+`projectKey`, `issueIdentifier` such as `TEL-23`, or `issueId`. This applies to
+text-only messages as well as Markdown documents. A text-only call without route
+context keeps the existing company/default fallback behavior.
 
-Route-aware Markdown sends fail closed before calling Telegram when no enabled route matches, duplicate enabled routes match the same project key, enabled route config is invalid, `issueId` cannot be resolved in the current company, or route context is mixed with explicit `chatId`/`threadId`. Configured `fileRoutes[].chatId` values are operator-managed destinations and do not require `allowedTelegramChatIds`; explicit `chatId` calls still do.
+Route-aware calls fail closed before calling Telegram when a route field is
+malformed, route fields disagree, an issue cannot be resolved in the current
+company, no enabled route matches, duplicate routes match, route configuration
+is invalid, or route context is mixed with explicit `chatId`/`threadId`.
+Multiple route fields are allowed only when they identify the same project and
+issue. Configured `fileRoutes[].chatId` values are operator-managed destinations
+and do not require `allowedTelegramChatIds`; explicit `chatId` calls still do.
+
+A successful routed text response includes the resolved routing metadata:
+
+```json
+{
+  "ok": true,
+  "mode": "message",
+  "chatId": "-1002222222222",
+  "threadId": 1,
+  "messageId": 101,
+  "routeSource": "file_route",
+  "routeName": "TEL files",
+  "projectKey": "TEL",
+  "issueIdentifier": "TEL-23"
+}
+```
+
+`threadId` and `issueIdentifier` are omitted when the matched route or request
+does not provide them.
+
+Compatibility note: route-aware text calls previously ignored route fields and
+used company/default fallback; they now route or fail closed. Text and document
+calls with mutually conflicting route fields also fail closed instead of letting
+an explicit `projectKey` hide the conflict. No-context text behavior is unchanged.
 
 ### Board access for approval actions
 
@@ -292,9 +326,9 @@ Schema (shared with `send_file_to_telegram`):
 - `text` (optional): text message, or caption when `markdownContent` is provided.
 - `markdownContent` (optional): markdown document content to upload as a `.md` file.
 - `chatId` (optional): explicit Telegram chat ID override.
-- `projectKey` (optional): Paperclip project key for Markdown document routing, for example `TEL`.
-- `issueIdentifier` (optional): Paperclip issue key for Markdown document routing, for example `TEL-23`.
-- `issueId` (optional): Paperclip issue ID used to resolve the issue key for Markdown document routing.
+- `projectKey` (optional): Paperclip project key for route-aware text or document delivery, for example `TEL`.
+- `issueIdentifier` (optional): Paperclip issue key used to derive the route, for example `TEL-23`.
+- `issueId` (optional): Paperclip issue ID resolved within the current company to derive and validate the route.
 - `markdownFileName` (optional): filename for markdown upload, defaults to `paperclip-message.md`.
 - `parseMode` (optional): `MarkdownV2` or `HTML` for text/caption only.
 - `threadId` (optional): Telegram forum topic ID.
@@ -308,9 +342,16 @@ Validation and behavior:
 - Source fields outside contract are rejected (`path`, `filePath`, `url`, `fileUrl`, `fileURL`, `uri`, `fileUri`, `file_uri`, `telegramFileId`, `telegram_file_id`, `file_id`, `file`, `files`, `binary`, `binaryContent`, `fileContent`, `content`).
 - `markdownContent` is content-only; no path or file payload arguments are accepted.
 - Safe filename checks reject separators, traversal (`../`, `..\\`, `/`, `\\`), dotfiles, secret-like names (`secret`, `token`, `credential`, `password`, `private-key`), and Windows drive prefixes like `C:report.md`.
-- `markdownContent` and `text` caps are enforced: `256 KiB` and `1024` bytes respectively.
+- `markdownContent` is capped at `256 KiB`; `text` used as a document caption is capped at `1024` UTF-8 bytes.
 - Explicit `chatId` must pass `allowedTelegramChatIds`; empty allowlist rejects explicit IDs.
-- Route-aware Markdown document sends use `fileRoutes`; unmatched, ambiguous, invalid, or conflicting route inputs are rejected before any Telegram API call.
+- Route-aware text and document sends use `fileRoutes`. Wrong-type, oversized,
+  malformed, unresolved, unmatched, ambiguous, or conflicting route inputs are
+  rejected before any Telegram API call. Route context cannot be combined with
+  explicit `chatId` or `threadId`.
+- Non-empty route strings are bounded to 32 Unicode code points for `projectKey`,
+  64 for `issueIdentifier`, and 128 for `issueId`. Missing, null, empty, and
+  whitespace-only fields are absent; other JSON types are invalid rather than a
+  reason to fall back.
 - Response includes structured result/error with required codes:
   - `missing_content`
   - `disallowed_chat`
@@ -322,6 +363,8 @@ Validation and behavior:
   - `unknown_project_route`
   - `ambiguous_route`
   - `invalid_route_config`
+  - `invalid_route_context`
+  - `conflicting_route_context`
   - `conflicting_destination`
   - `unresolved_issue`
   - `markdown_too_large`

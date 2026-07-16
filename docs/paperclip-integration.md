@@ -108,40 +108,54 @@ notification dispatch will route project-scoped events to the matching topic.
 For an outbound `send_to_telegram` call you can also set `threadId: <forum
 topic id>` in `params` to target a specific topic explicitly.
 
-### 3. Issue identifier prefix (`GIM`, `TEL`, `UNS`, …) — `fileRoutes`
+### 3. Route-aware outbound actions — `fileRoutes`
 
-The Gimle fork (TEL-23) wires `issueIdentifier` prefix to a configurable
-per-project chat through `config.fileRoutes`. This lets every Paperclip project
-write into its own chat without any caller having to know the chat ID.
+The Gimle fork wires explicit route context to a configurable per-project chat
+through `config.fileRoutes`. This applies to both text-only messages and Markdown
+documents, so every Paperclip project can write into its own chat without callers
+knowing the chat ID.
 
 Behaviour:
 
-- Caller passes `issueIdentifier: "GIM-272"` in `params`. The plugin extracts
-  the prefix with `parseProjectKeyFromIssueIdentifier` (regex
-  `^([A-Z][A-Z0-9]*)-\d+$`), giving `"GIM"`.
+- Caller passes `projectKey`, `issueIdentifier: "GIM-272"`, or `issueId` in
+  `params`. An issue identifier derives its project prefix with regex
+  `^([A-Z][A-Z0-9]*)-\d+$`, giving `"GIM"`.
+- `issueId` is resolved within the current company before routing.
+- When multiple route fields are supplied, their normalized project keys and
+  issue identifiers must agree. No field takes precedence to hide a conflict.
 - The plugin looks up `config.fileRoutes` for an enabled entry with matching
   `projectKey` and uses its `chatId` (optionally `topicId`).
 - The response includes `routeSource: "file_route"` and the matched
-  `routeName` / `projectKey` so the caller can verify routing happened.
+  `routeName` / `projectKey` so the caller can verify routing happened. A
+  resolved `issueIdentifier` is also returned when available.
 
-Resolution precedence (first match wins):
+Destination sources:
 
-1. **`explicit`** — caller passed `chatId` and it's in `allowedTelegramChatIds`.
-2. **`file_route`** — `issueIdentifier` prefix matches an enabled `fileRoutes`
-   entry.
-3. **`legacy_fallback`** — falls through to per-company `telegram-chat` state
-   override, then `defaultChatId`.
+1. **`explicit`** — caller passed `chatId`, supplied no route context, and the ID
+   is in `allowedTelegramChatIds`.
+2. **`file_route`** — one or more agreeing route fields identify exactly one
+   enabled `fileRoutes` entry.
+3. **`legacy_fallback`** — a call with no explicit chat and no route context
+   falls through to per-company `telegram-chat` state, then `defaultChatId`.
+
+Route context cannot be mixed with explicit `chatId` or `threadId`; that is a
+conflicting destination rather than a precedence choice.
 
 Error codes specific to file-route resolution:
 
 | Code | Meaning |
 |---|---|
-| `missing_destination` | No explicit chatId, no `issueIdentifier`, no per-company override, no `defaultChatId`. |
-| `missing_route_context` | `fileRoutes` configured but caller gave no `issueIdentifier` (or `issueId` that resolves to one) to match against. |
+| `invalid_route_context` | A non-empty route field has the wrong type, is oversized, contains control characters, or cannot be normalized/parsed. |
+| `conflicting_route_context` | Supplied or resolved project/issue route fields disagree. |
 | `unknown_project_route` | Prefix parsed, but no enabled `fileRoutes` entry has matching `projectKey`. |
 | `ambiguous_route` | More than one enabled entry matches the same `projectKey` (config error — fix by removing duplicates). |
 | `invalid_route_config` | `fileRoutes` array contains malformed entries (bad chatId/topicId/projectKey). |
-| `conflicting_destination` | Caller supplied both `explicit chatId` and `issueIdentifier` whose resolved route disagrees. |
+| `unresolved_issue` | A supplied `issueId` cannot be resolved within the current company. |
+| `conflicting_destination` | Route context is mixed with explicit `chatId` or `threadId`. |
+
+All route failures occur before `sendMessage` or `sendDocument`. Missing, null,
+empty, and whitespace-only route fields are treated as absent. Other JSON types
+are invalid and never downgrade a call to legacy fallback.
 
 Example `fileRoutes` config:
 
@@ -163,9 +177,9 @@ Edit via the plugin Settings UI (it has a File Routes section) or via
 | UnstoppableAudit | `UNS` | `8f55e80b-0264-4ab6-9d56-8b2652f18005` |
 | Medic | `MED` | `7c094d21-a02d-4554-8f35-730bf25ea492` |
 
-Pass `issueIdentifier: "GIM-272"` in the action body to both route the file AND
-display a clean header (`GIM-272 …`). The plugin enriches further with issue
-title/run link when resolvable from `issueId`.
+Pass `issueIdentifier: "GIM-272"` in the action body to route either a message or
+document. Pass `issueId` when the plugin should resolve and verify the identifier
+within the current company.
 
 ### 3a. Ops events per company — `opsRoutes`
 
@@ -261,14 +275,16 @@ alias exists only for backward compatibility with the TEL-8 prototype.
 |---|---|---|
 | `companyId` | string (UUID) | Required for chat resolution. Defaults to `"system"` if omitted, which usually fails. |
 | `agentId` | string (UUID) | Required for activity log attribution. Defaults to `"system"`. |
-| `text` | string | Plain-text or MarkdownV2 message body. Required if `markdownContent` is absent. |
+| `text` | string | Plain-text or formatted message body; when `markdownContent` is present, this becomes the document caption. Required if `markdownContent` is absent. |
 | `markdownContent` | string | UTF-8 markdown content; sent as a Telegram `.md` attachment via `sendDocument`. Required if `text` is absent. |
 | `markdownFileName` | string | Filename for the attachment. Defaults to `paperclip-message.md`. Must end `.md`, no path separators, no traversal, no leading dot, no obvious secret tokens. |
 | `chatId` | string | Explicit chat override. **Only accepted if also in `allowedTelegramChatIds`.** Otherwise the plugin rejects with `disallowed_chat`. |
 | `threadId` | positive integer | Forum topic ID within the chat. |
 | `replyToMessageId` | positive integer | Reply to a specific message. |
 | `parseMode` | `"MarkdownV2"` or `"HTML"` | Defaults to plain text. |
-| `issueIdentifier` | string | Cosmetic header (`"GIM-272"`, etc.). |
+| `projectKey` | string | Project key for route-aware text or document delivery, for example `GIM`; maximum 32 Unicode code points. |
+| `issueIdentifier` | string | Issue key used to derive and validate the route, for example `GIM-272`; maximum 64 Unicode code points. |
+| `issueId` | string | Paperclip issue ID resolved within the current company to derive and validate the route; maximum 128 Unicode code points. |
 | `sessionId` | string | Forwarded to plugin state for ACP session correlation. |
 
 **Result envelope:**
@@ -281,7 +297,11 @@ alias exists only for backward compatibility with the TEL-8 prototype.
       "mode": "message" | "document",
       "chatId": "-1003...",
       "threadId": 42,
-      "messageId": 147
+      "messageId": 147,
+      "routeSource": "file_route",
+      "routeName": "Gimle files",
+      "projectKey": "GIM",
+      "issueIdentifier": "GIM-272"
     }
   }
 }
@@ -290,6 +310,12 @@ alias exists only for backward compatibility with the TEL-8 prototype.
 The Paperclip REST layer wraps every action result in `{data: {…}}`; the
 plugin returns `{content, data}` inside that. Parse `.data.data` (or the
 stringified `.data.content`) to read the actual plugin response.
+
+For a successful routed text-only call, `mode` is `"message"` and
+`routeSource` is `"file_route"`. `routeName`, `projectKey`, and `messageId` are
+present; `threadId` and `issueIdentifier` are present when supplied by the route
+or resolved request. Explicit and legacy-fallback messages do not invent route
+metadata.
 
 **Error codes** (all return `ok: false` inside the inner envelope, HTTP 200
 from the route):
@@ -305,6 +331,24 @@ from the route):
 | `unsafe_filename` | Filename matches `secret|token|credential|password|private-key` token, or starts with `.`, or contains control chars. |
 | `markdown_too_large` | `markdownContent` exceeds 256 KiB. |
 | `caption_too_large` | When `text` is used as caption alongside `markdownContent`, caption is capped at 1024 bytes. |
+| `invalid_route_context` | A route field has the wrong type, is oversized, contains control characters, or cannot be normalized/parsed. |
+| `conflicting_route_context` | Supplied or resolved project/issue route fields disagree. |
+| `unresolved_issue` | `issueId` cannot be resolved within the current company. |
+| `unknown_project_route` | No enabled `fileRoutes` entry matches the normalized project key. |
+| `ambiguous_route` | More than one enabled route matches the same project key. |
+| `invalid_route_config` | Enabled `fileRoutes` configuration is malformed. |
+| `conflicting_destination` | Route context is mixed with explicit `chatId` or `threadId`. |
+| `telegram_send_failed` | Telegram did not return a successful message identifier. |
+
+Route-aware text and document calls fail before the Telegram API for every route
+error above. Multiple route fields are accepted only when they agree. A
+text-only call without route context retains company/default fallback behavior.
+
+Compatibility note: text-only calls that previously supplied ignored route
+fields now route through `fileRoutes` or fail closed. Text and document calls
+with mutually inconsistent `projectKey`, `issueIdentifier`, or resolved
+`issueId` also fail closed instead of allowing `projectKey` precedence to hide
+the conflict.
 
 ### `set-chat`
 

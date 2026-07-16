@@ -43,19 +43,24 @@ export type TelegramFileDestination =
       | "unknown_project_route"
       | "ambiguous_route"
       | "invalid_route_config"
+      | "invalid_route_context"
+      | "conflicting_route_context"
       | "conflicting_destination"
       | "unresolved_issue";
     message: string;
+    invalidField?: RouteContextField;
     projectKey?: string;
     issueIdentifier?: string;
   };
 
+export type RouteContextField = "projectKey" | "issueIdentifier" | "issueId";
+
 export type TelegramFileDestinationRequest = {
-  explicitChatId?: string | null;
-  explicitThreadId?: number;
-  issueId?: string | null;
-  issueIdentifier?: string | null;
-  projectKey?: string | null;
+  explicitChatId?: unknown;
+  explicitThreadId?: unknown;
+  issueId?: unknown;
+  issueIdentifier?: unknown;
+  projectKey?: unknown;
   lookupIssueIdentifier?: (issueId: string) => Promise<string | null>;
 };
 
@@ -63,6 +68,12 @@ const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]*$/;
 const ISSUE_IDENTIFIER_PATTERN = /^([A-Z][A-Z0-9]*)-\d+$/;
 const CHAT_ID_PATTERN = /^-?\d+$/;
 const TOPIC_ID_PATTERN = /^\d+$/;
+const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
+const ROUTE_CONTEXT_LIMITS: Record<RouteContextField, number> = {
+  projectKey: 32,
+  issueIdentifier: 64,
+  issueId: 128,
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -172,26 +183,35 @@ export async function resolveTelegramFileDestination(
   fileRoutes: unknown,
   request: TelegramFileDestinationRequest,
 ): Promise<TelegramFileDestination> {
-  const hasExplicitChat = Boolean(request.explicitChatId);
-  const hasExplicitThread = request.explicitThreadId !== undefined;
-  const hasRouteInput = Boolean(request.projectKey || request.issueIdentifier || request.issueId);
+  const routeContextInput = validateRouteContextInput(request);
+  if (!routeContextInput.ok) return routeContextInput;
+
+  const explicitChatId = cleanString(request.explicitChatId);
+  const hasRouteInput = Boolean(
+    routeContextInput.projectKey
+    || routeContextInput.issueIdentifier
+    || routeContextInput.issueId
+  );
 
   if (!hasRouteInput) {
-    if (hasExplicitChat) {
-      return { ok: true, source: "explicit", chatId: request.explicitChatId! };
+    if (explicitChatId) {
+      return { ok: true, source: "explicit", chatId: explicitChatId };
     }
     return { ok: true, source: "legacy_fallback", chatId: "" };
   }
 
-  if (hasExplicitChat || hasExplicitThread) {
+  if (
+    hasExplicitDestinationIntent(request.explicitChatId)
+    || hasExplicitDestinationIntent(request.explicitThreadId)
+  ) {
     return {
       ok: false,
       code: "conflicting_destination",
-      message: "Route-aware Telegram file sends cannot also set chatId or threadId.",
+      message: "Route-aware Telegram sends cannot also set chatId or threadId.",
     };
   }
 
-  const routeContext = await resolveRouteContext(request);
+  const routeContext = await resolveRouteContext(routeContextInput, request.lookupIssueIdentifier);
   if (!routeContext.ok) return routeContext;
 
   const validation = validateTelegramFileRoutes(fileRoutes);
@@ -238,6 +258,77 @@ export async function resolveTelegramFileDestination(
   };
 }
 
+type ValidatedRouteContextInput = {
+  ok: true;
+  projectKey?: string;
+  issueIdentifier?: string;
+  issueId?: string;
+};
+
+function validateRouteContextInput(
+  request: TelegramFileDestinationRequest,
+): ValidatedRouteContextInput | Extract<TelegramFileDestination, { ok: false }> {
+  const projectKey = validateRouteContextField("projectKey", request.projectKey);
+  if (!projectKey.ok) return projectKey;
+
+  const issueIdentifier = validateRouteContextField("issueIdentifier", request.issueIdentifier);
+  if (!issueIdentifier.ok) return issueIdentifier;
+
+  const issueId = validateRouteContextField("issueId", request.issueId);
+  if (!issueId.ok) return issueId;
+
+  return {
+    ok: true,
+    projectKey: projectKey.value,
+    issueIdentifier: issueIdentifier.value,
+    issueId: issueId.value,
+  };
+}
+
+function validateRouteContextField(
+  field: RouteContextField,
+  value: unknown,
+): { ok: true; value?: string } | Extract<TelegramFileDestination, { ok: false }> {
+  if (value === undefined || value === null) return { ok: true };
+  if (typeof value !== "string") return invalidRouteContext(field);
+
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: true };
+  if ([...value].length > ROUTE_CONTEXT_LIMITS[field] || CONTROL_CHARACTER_PATTERN.test(value)) {
+    return invalidRouteContext(field);
+  }
+
+  if (field === "projectKey") {
+    const normalized = normalizeProjectKey(trimmed);
+    return normalized ? { ok: true, value: normalized } : invalidRouteContext(field);
+  }
+
+  if (field === "issueIdentifier") {
+    const normalized = trimmed.toUpperCase();
+    return parseProjectKeyFromIssueIdentifier(normalized)
+      ? { ok: true, value: normalized }
+      : invalidRouteContext(field);
+  }
+
+  return { ok: true, value: trimmed };
+}
+
+function invalidRouteContext(
+  invalidField: RouteContextField,
+): Extract<TelegramFileDestination, { ok: false }> {
+  return {
+    ok: false,
+    code: "invalid_route_context",
+    message: `${invalidField} is not valid Telegram route context.`,
+    invalidField,
+  };
+}
+
+function hasExplicitDestinationIntent(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  return typeof value !== "string" || value.length > 0;
+}
+
 function findDuplicates(values: string[]): string[] {
   const seen = new Set<string>();
   const duplicates = new Set<string>();
@@ -252,56 +343,70 @@ function findDuplicates(values: string[]): string[] {
 }
 
 async function resolveRouteContext(
-  request: TelegramFileDestinationRequest,
+  request: ValidatedRouteContextInput,
+  lookupIssueIdentifier?: (issueId: string) => Promise<string | null>,
 ): Promise<
   | { ok: true; projectKey: string; issueIdentifier?: string }
   | Extract<TelegramFileDestination, { ok: false }>
 > {
-  const issueId = cleanString(request.issueId);
   let resolvedIssueIdentifier: string | undefined;
-  if (issueId) {
-    const lookupResult = await request.lookupIssueIdentifier?.(issueId);
+  if (request.issueId) {
+    const lookupResult = await lookupIssueIdentifier?.(request.issueId);
     if (!lookupResult) {
       return {
         ok: false,
         code: "unresolved_issue",
-        message: "Could not resolve the Paperclip issue for Telegram file routing.",
+        message: "Could not resolve the Paperclip issue for Telegram routing.",
       };
     }
-    resolvedIssueIdentifier = lookupResult.toUpperCase();
+
+    const resolvedIdentifier = validateRouteContextField("issueIdentifier", lookupResult);
+    if (!resolvedIdentifier.ok || !resolvedIdentifier.value) {
+      return invalidRouteContext("issueId");
+    }
+    resolvedIssueIdentifier = resolvedIdentifier.value;
   }
 
-  const explicitProjectKey = normalizeProjectKey(request.projectKey);
-  if (explicitProjectKey) {
-    return {
-      ok: true,
-      projectKey: explicitProjectKey,
-      issueIdentifier: cleanString(request.issueIdentifier).toUpperCase() || resolvedIssueIdentifier,
-    };
-  }
+  const explicitProjectKey = request.projectKey;
+  const explicitIssueIdentifier = request.issueIdentifier;
+  const projectKeys = [
+    explicitProjectKey,
+    explicitIssueIdentifier ? parseProjectKeyFromIssueIdentifier(explicitIssueIdentifier) : undefined,
+    resolvedIssueIdentifier ? parseProjectKeyFromIssueIdentifier(resolvedIssueIdentifier) : undefined,
+  ].filter((projectKey): projectKey is string => Boolean(projectKey));
 
-  const issueIdentifier = cleanString(request.issueIdentifier).toUpperCase() || resolvedIssueIdentifier;
-  const projectKeyFromIdentifier = parseProjectKeyFromIssueIdentifier(issueIdentifier);
-  if (projectKeyFromIdentifier) {
-    return {
-      ok: true,
-      projectKey: projectKeyFromIdentifier,
-      issueIdentifier,
-    };
-  }
-
-  if (resolvedIssueIdentifier) {
+  if (new Set(projectKeys).size > 1) {
     return {
       ok: false,
-      code: "missing_route_context",
-      message: "Resolved issue identifier does not contain a routable project key.",
-      issueIdentifier: resolvedIssueIdentifier,
+      code: "conflicting_route_context",
+      message: "Telegram route context fields resolve to different project keys.",
+    };
+  }
+
+  if (
+    explicitIssueIdentifier
+    && resolvedIssueIdentifier
+    && explicitIssueIdentifier !== resolvedIssueIdentifier
+  ) {
+    return {
+      ok: false,
+      code: "conflicting_route_context",
+      message: "Telegram route context fields resolve to different issue identifiers.",
+    };
+  }
+
+  const projectKey = projectKeys[0];
+  if (!projectKey) {
+    return {
+      ok: false,
+      code: "invalid_route_context",
+      message: "Telegram route context does not contain a valid project key.",
     };
   }
 
   return {
-    ok: false,
-    code: "missing_route_context",
-    message: "Telegram file routing needs projectKey, issueIdentifier, or issueId.",
+    ok: true,
+    projectKey,
+    issueIdentifier: explicitIssueIdentifier ?? resolvedIssueIdentifier,
   };
 }
