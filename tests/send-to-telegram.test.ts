@@ -672,6 +672,37 @@ describe("sendToTelegramTool", () => {
     },
   );
 
+  it.each([
+    { field: "projectKey", value: "" },
+    { field: "projectKey", value: "   " },
+    { field: "issueIdentifier", value: "" },
+    { field: "issueIdentifier", value: "\t  " },
+    { field: "issueId", value: "" },
+    { field: "issueId", value: "  \n" },
+  ])("rejects present empty route context: $field", async ({ field, value }) => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const result = await runSendToTelegram(
+      { text: "empty route context", [field]: value },
+      telRouteConfig,
+      ctx,
+    );
+
+    expect(result.data).toMatchObject({
+      ok: false,
+      code: "invalid_route_context",
+      invalidField: field,
+    });
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      "Telegram agent send routing decision",
+      expect.objectContaining({
+        contentMode: "message",
+        errorCode: "invalid_route_context",
+        invalidField: field,
+      }),
+    );
+    expectNoTelegramCalls();
+  });
+
   it.each(["projectKey", "issueIdentifier", "issueId"])(
     "rejects and redacts oversized %s",
     async (field) => {

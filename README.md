@@ -349,9 +349,9 @@ Validation and behavior:
   rejected before any Telegram API call. Route context cannot be combined with
   explicit `chatId` or `threadId`.
 - Non-empty route strings are bounded to 32 Unicode code points for `projectKey`,
-  64 for `issueIdentifier`, and 128 for `issueId`. Missing, null, empty, and
-  whitespace-only fields are absent; other JSON types are invalid rather than a
-  reason to fall back.
+  64 for `issueIdentifier`, and 128 for `issueId`. Missing and null fields are
+  absent; empty or whitespace-only strings and other JSON types are invalid
+  rather than a reason to fall back.
 - Response includes structured result/error with required codes:
   - `missing_content`
   - `disallowed_chat`

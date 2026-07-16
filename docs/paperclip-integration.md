@@ -145,7 +145,7 @@ Error codes specific to file-route resolution:
 
 | Code | Meaning |
 |---|---|
-| `invalid_route_context` | A non-empty route field has the wrong type, is oversized, contains control characters, or cannot be normalized/parsed. |
+| `invalid_route_context` | A present route field is empty, has the wrong type, is oversized, contains control characters, or cannot be normalized/parsed. |
 | `conflicting_route_context` | Supplied or resolved project/issue route fields disagree. |
 | `unknown_project_route` | Prefix parsed, but no enabled `fileRoutes` entry has matching `projectKey`. |
 | `ambiguous_route` | More than one enabled entry matches the same `projectKey` (config error — fix by removing duplicates). |
@@ -153,9 +153,9 @@ Error codes specific to file-route resolution:
 | `unresolved_issue` | A supplied `issueId` cannot be resolved within the current company. |
 | `conflicting_destination` | Route context is mixed with explicit `chatId` or `threadId`. |
 
-All route failures occur before `sendMessage` or `sendDocument`. Missing, null,
-empty, and whitespace-only route fields are treated as absent. Other JSON types
-are invalid and never downgrade a call to legacy fallback.
+All route failures occur before `sendMessage` or `sendDocument`. Missing and null
+route fields are treated as absent. Empty or whitespace-only strings and other
+JSON types are invalid and never downgrade a call to legacy fallback.
 
 Example `fileRoutes` config:
 

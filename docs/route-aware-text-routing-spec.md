@@ -109,10 +109,11 @@ intent:
 - `issueIdentifier`;
 - `issueId`.
 
-For each route field, missing property, `undefined`, `null`, empty string, and
-whitespace-only string are absent. A non-empty string is present. Any other JSON
-type (`number`, `boolean`, array, or object) is present but invalid and returns
-`invalid_route_context`; it must never downgrade to legacy fallback.
+For each route field, a missing property, `undefined`, or `null` is absent. An
+empty or whitespace-only string is present but invalid. A non-empty string is
+present. Any other JSON type (`number`, `boolean`, array, or object) is also
+present but invalid and returns `invalid_route_context`; invalid input must
+never downgrade to legacy fallback.
 
 Raw route strings are bounded before normalization:
 
@@ -120,8 +121,8 @@ Raw route strings are bounded before normalization:
 - `issueIdentifier`: at most 64 Unicode code points;
 - `issueId`: at most 128 Unicode code points.
 
-Oversized strings, control characters, and malformed non-empty strings return
-`invalid_route_context` without echoing their value.
+Empty strings, oversized strings, control characters, and malformed strings
+return `invalid_route_context` without echoing their value.
 
 Payload mode does not participate in this decision. In particular,
 `markdownContent` is not a prerequisite for route resolution.

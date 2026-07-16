@@ -293,7 +293,7 @@ function validateRouteContextField(
   if (typeof value !== "string") return invalidRouteContext(field);
 
   const trimmed = value.trim();
-  if (!trimmed) return { ok: true };
+  if (!trimmed) return invalidRouteContext(field);
   if ([...value].length > ROUTE_CONTEXT_LIMITS[field] || CONTROL_CHARACTER_PATTERN.test(value)) {
     return invalidRouteContext(field);
   }
