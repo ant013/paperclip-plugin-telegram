@@ -7,6 +7,7 @@ import {
   type Agent,
   type Issue,
 } from "@paperclipai/plugin-sdk";
+import { createHash } from "node:crypto";
 import {
   sendMessage,
   sendDocument,
@@ -525,7 +526,55 @@ type SendToTelegramResult = {
   projectKey?: string;
   issueIdentifier?: string;
   invalidField?: RouteContextField;
+  idempotencyKey?: string;
+  deduplicated?: boolean;
 };
+
+type TelegramDeliveryIdempotencyRecord = {
+  schemaVersion: 1;
+  fingerprint: string;
+  status: "pending" | "completed" | "failed";
+  result?: SendToTelegramResult;
+};
+
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9._:-]{1,160}$/;
+const deliveryIdempotencyQueues = new Map<string, Promise<void>>();
+
+function deliveryIdempotencyScope(companyId: string, idempotencyKey: string) {
+  const stateKey = createHash("sha256").update(idempotencyKey, "utf8").digest("hex");
+  return { scopeKind: "company" as const, scopeId: companyId, stateKey: `telegram_delivery_${stateKey}` };
+}
+
+function deliveryFingerprint(value: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
+}
+
+function parseIdempotencyRecord(value: unknown): TelegramDeliveryIdempotencyRecord | null {
+  if (!isRecord(value) || value.schemaVersion !== 1) return null;
+  if (typeof value.fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(value.fingerprint)) return null;
+  if (value.status !== "pending" && value.status !== "completed" && value.status !== "failed") return null;
+  if ((value.status === "completed" || value.status === "failed") && !isRecord(value.result)) return null;
+  return value as TelegramDeliveryIdempotencyRecord;
+}
+
+async function withDeliveryIdempotencyLock<T>(lockKey: string, run: () => Promise<T>): Promise<T> {
+  const previous = deliveryIdempotencyQueues.get(lockKey) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => gate);
+  deliveryIdempotencyQueues.set(lockKey, tail);
+  await previous;
+  try {
+    return await run();
+  } finally {
+    release();
+    if (deliveryIdempotencyQueues.get(lockKey) === tail) {
+      deliveryIdempotencyQueues.delete(lockKey);
+    }
+  }
+}
 
 function validateOutboundThreadId(value: unknown): number | "invalid" | undefined {
   if (value === undefined) return undefined;
@@ -562,7 +611,7 @@ function findUnsupportedMarkdownSourceField(params: Record<string, unknown>): st
   return null;
 }
 
-export async function sendToTelegramTool(
+async function sendToTelegramToolUnlocked(
   ctx: PluginContext,
   token: string,
   config: Pick<TelegramConfig, "defaultChatId" | "allowedTelegramChatIds" | "fileRoutes">,
@@ -591,6 +640,18 @@ export async function sendToTelegramTool(
   const parseMode = p.parseMode === "MarkdownV2" || p.parseMode === "HTML" ? p.parseMode : undefined;
   const requestedMarkdownFileName = asNonEmptyString(p.markdownFileName) ?? DEFAULT_MARKDOWN_FILENAME;
   const sessionId = asNonEmptyString(p.sessionId);
+  let idempotencyKey: string | undefined;
+  if (p.idempotencyKey !== undefined) {
+    const candidate = asNonEmptyString(p.idempotencyKey);
+    if (!candidate || !IDEMPOTENCY_KEY_RE.test(candidate)) {
+      const result = makeTelegramToolError(
+        "invalid_idempotency_key",
+        "idempotencyKey must be 1..160 characters containing only letters, digits, dot, underscore, colon, or hyphen.",
+      );
+      return { content: JSON.stringify(result), data: result };
+    }
+    idempotencyKey = candidate;
+  }
 
   if (markdownContent && Buffer.byteLength(markdownContent, "utf-8") > MAX_OUTBOUND_MARKDOWN_BYTES) {
     const result = makeTelegramToolError("markdown_too_large", "Markdown content exceeds size limits.");
@@ -672,51 +733,147 @@ export async function sendToTelegramTool(
   const outboundThreadId = destination.source === "file_route"
     ? destination.topicId
     : threadId;
-  const result = markdownContent
-    ? await sendDocument(ctx, token, chatId, markdownContent, {
-      filename: requestedMarkdownFileName,
-      caption: text ?? undefined,
-      parseMode,
-      messageThreadId: outboundThreadId,
-      replyToMessageId: typeof replyToMessageId === "number" ? replyToMessageId : undefined,
-      disableNotification: p.silent === true,
-    }).then((messageId) => {
-      if (!messageId) {
-        return makeTelegramToolError("telegram_send_failed", "Telegram send failed.");
-      }
-      return {
-        ok: true,
-        mode: "document",
-        chatId,
-        threadId: outboundThreadId,
-        messageId,
-        routeSource,
-        routeName: destination.routeName,
-        projectKey: destination.projectKey,
-        issueIdentifier: destination.issueIdentifier,
-      } as const;
+  const idempotencyScope = idempotencyKey
+    ? deliveryIdempotencyScope(runCtx.companyId, idempotencyKey)
+    : null;
+  const fingerprint = idempotencyKey
+    ? deliveryFingerprint({
+      mode: markdownContent ? "document" : "message",
+      chatId,
+      threadId: outboundThreadId ?? null,
+      replyToMessageId: typeof replyToMessageId === "number" ? replyToMessageId : null,
+      parseMode: parseMode ?? null,
+      filename: markdownContent ? requestedMarkdownFileName : null,
+      text: text ?? null,
+      markdownContent: markdownContent ?? null,
+      silent: p.silent === true,
+      routeSource,
+      routeName: destination.routeName ?? null,
+      projectKey: destination.projectKey ?? null,
+      issueIdentifier: destination.issueIdentifier ?? null,
     })
-    : await sendMessage(ctx, token, chatId, text!, {
-      parseMode,
-      messageThreadId: outboundThreadId,
-      replyToMessageId: typeof replyToMessageId === "number" ? replyToMessageId : undefined,
-      disableNotification: p.silent === true,
-    }).then((messageId) => {
-      if (!messageId) {
-        return makeTelegramToolError("telegram_send_failed", "Telegram send failed.");
+    : null;
+
+  if (idempotencyScope && fingerprint) {
+    const rawExisting = await ctx.state.get(idempotencyScope);
+    if (rawExisting !== null && rawExisting !== undefined) {
+      const existing = parseIdempotencyRecord(rawExisting);
+      if (!existing) {
+        const result: SendToTelegramResult = {
+          ...makeTelegramToolError("idempotency_state_invalid", "Stored delivery idempotency state is invalid."),
+          idempotencyKey,
+        };
+        return { content: JSON.stringify(result), data: result };
       }
-      return {
-        ok: true,
-        mode: "message",
-        chatId,
-        threadId: outboundThreadId,
-        messageId,
-        routeSource,
-        routeName: destination.routeName,
-        projectKey: destination.projectKey,
-        issueIdentifier: destination.issueIdentifier,
-      } as const;
-    });
+      if (existing.fingerprint !== fingerprint) {
+        const result: SendToTelegramResult = {
+          ...makeTelegramToolError("idempotency_conflict", "idempotencyKey was already used for a different delivery."),
+          idempotencyKey,
+        };
+        return { content: JSON.stringify(result), data: result };
+      }
+      if (existing.status === "completed" && existing.result?.ok === true) {
+        const result: SendToTelegramResult = {
+          ...existing.result,
+          idempotencyKey,
+          deduplicated: true,
+        };
+        return { content: JSON.stringify(result), data: result };
+      }
+      if (existing.status === "failed" && existing.result) {
+        const result: SendToTelegramResult = {
+          ...existing.result,
+          idempotencyKey,
+          deduplicated: true,
+        };
+        return { content: JSON.stringify(result), data: result };
+      }
+      const result: SendToTelegramResult = {
+        ...makeTelegramToolError(
+          "delivery_outcome_unknown",
+          "A delivery with this idempotencyKey is already pending; Telegram will not be called again.",
+        ),
+        idempotencyKey,
+        deduplicated: true,
+      };
+      return { content: JSON.stringify(result), data: result };
+    }
+    await ctx.state.set(idempotencyScope, {
+      schemaVersion: 1,
+      fingerprint,
+      status: "pending",
+    } satisfies TelegramDeliveryIdempotencyRecord);
+  }
+
+  let result: SendToTelegramResult;
+  try {
+    result = markdownContent
+      ? await sendDocument(ctx, token, chatId, markdownContent, {
+        filename: requestedMarkdownFileName,
+        caption: text ?? undefined,
+        parseMode,
+        messageThreadId: outboundThreadId,
+        replyToMessageId: typeof replyToMessageId === "number" ? replyToMessageId : undefined,
+        disableNotification: p.silent === true,
+      }).then((messageId) => {
+        if (!messageId) {
+          return makeTelegramToolError("telegram_send_failed", "Telegram send failed.");
+        }
+        return {
+          ok: true,
+          mode: "document",
+          chatId,
+          threadId: outboundThreadId,
+          messageId,
+          routeSource,
+          routeName: destination.routeName,
+          projectKey: destination.projectKey,
+          issueIdentifier: destination.issueIdentifier,
+          idempotencyKey,
+        } as const;
+      })
+      : await sendMessage(ctx, token, chatId, text!, {
+        parseMode,
+        messageThreadId: outboundThreadId,
+        replyToMessageId: typeof replyToMessageId === "number" ? replyToMessageId : undefined,
+        disableNotification: p.silent === true,
+      }).then((messageId) => {
+        if (!messageId) {
+          return makeTelegramToolError("telegram_send_failed", "Telegram send failed.");
+        }
+        return {
+          ok: true,
+          mode: "message",
+          chatId,
+          threadId: outboundThreadId,
+          messageId,
+          routeSource,
+          routeName: destination.routeName,
+          projectKey: destination.projectKey,
+          issueIdentifier: destination.issueIdentifier,
+          idempotencyKey,
+        } as const;
+      });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Telegram delivery raised an unknown error.";
+    result = {
+      ...makeTelegramToolError("delivery_outcome_unknown", message),
+      idempotencyKey,
+    };
+  }
+
+  if (idempotencyKey && !result.idempotencyKey) {
+    result = { ...result, idempotencyKey };
+  }
+
+  if (idempotencyScope && fingerprint) {
+    await ctx.state.set(idempotencyScope, {
+      schemaVersion: 1,
+      fingerprint,
+      status: result.ok ? "completed" : "failed",
+      result,
+    } satisfies TelegramDeliveryIdempotencyRecord);
+  }
 
   if (!result.ok) {
     await logSendToTelegramAttempt(ctx, runCtx, {
@@ -758,6 +915,22 @@ export async function sendToTelegramTool(
   });
 
   return { content: JSON.stringify(result), data: result };
+}
+
+export async function sendToTelegramTool(
+  ctx: PluginContext,
+  token: string,
+  config: Pick<TelegramConfig, "defaultChatId" | "allowedTelegramChatIds" | "fileRoutes">,
+  params: unknown,
+  runCtx: { companyId: string; agentId: string },
+): Promise<{ content: string; data: SendToTelegramResult }> {
+  const rawKey = isRecord(params) ? params.idempotencyKey : undefined;
+  if (typeof rawKey !== "string") {
+    return sendToTelegramToolUnlocked(ctx, token, config, params, runCtx);
+  }
+  const lockKey = `${runCtx.companyId}\u0000${rawKey}`;
+  return withDeliveryIdempotencyLock(lockKey, () =>
+    sendToTelegramToolUnlocked(ctx, token, config, params, runCtx));
 }
 
 async function resolveIssueIdentifierForFileRoute(
@@ -1586,6 +1759,11 @@ export const plugin = definePlugin({
             type: "string",
             description: "Optional Paperclip session ID for routing Telegram replies back to the agent session.",
           },
+          idempotencyKey: {
+            type: "string",
+            pattern: "^[A-Za-z0-9._:-]{1,160}$",
+            description: "Optional company-scoped key that makes retries return the original delivery result without resending.",
+          },
         },
         anyOf: [{ required: ["text"] }, { required: ["markdownContent"] }],
       },
@@ -1646,6 +1824,11 @@ export const plugin = definePlugin({
           sessionId: {
             type: "string",
             description: "Optional Paperclip session ID for routing Telegram replies back to the agent session.",
+          },
+          idempotencyKey: {
+            type: "string",
+            pattern: "^[A-Za-z0-9._:-]{1,160}$",
+            description: "Optional company-scoped key that makes retries return the original delivery result without resending.",
           },
         },
         anyOf: [{ required: ["text"] }, { required: ["markdownContent"] }],

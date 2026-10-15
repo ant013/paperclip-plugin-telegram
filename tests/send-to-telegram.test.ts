@@ -179,6 +179,129 @@ describe("sendToTelegramTool", () => {
     );
   });
 
+  it("deduplicates repeated document delivery with the same idempotency key", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const params = {
+      text: "UAudit result",
+      markdownContent: "# Audit report",
+      markdownFileName: "audit-final.ru.md",
+      idempotencyKey: `uaudit:${"a".repeat(64)}:ru`,
+    };
+
+    const first = await runSendToTelegram(params, defaultConfig, ctx);
+    const second = await runSendToTelegram(params, defaultConfig, ctx);
+
+    expect(first.data).toMatchObject({
+      ok: true,
+      messageId: 202,
+      idempotencyKey: params.idempotencyKey,
+    });
+    expect(second.data).toMatchObject({
+      ok: true,
+      messageId: 202,
+      idempotencyKey: params.idempotencyKey,
+      deduplicated: true,
+    });
+    expect(telegramApi.sendDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("deduplicates repeated text delivery with the same idempotency key", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const params = {
+      text: "UAudit no_change",
+      idempotencyKey: `uaudit-status:${"d".repeat(64)}`,
+    };
+
+    const first = await runSendToTelegram(params, defaultConfig, ctx);
+    const second = await runSendToTelegram(params, defaultConfig, ctx);
+
+    expect(first.data).toMatchObject({ ok: true, messageId: 101 });
+    expect(second.data).toMatchObject({ ok: true, messageId: 101, deduplicated: true });
+    expect(telegramApi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes concurrent calls for the same idempotency key", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const params = {
+      text: "UAudit concurrent retry",
+      idempotencyKey: `uaudit-status:${"e".repeat(64)}`,
+    };
+
+    const [first, second] = await Promise.all([
+      runSendToTelegram(params, defaultConfig, ctx),
+      runSendToTelegram(params, defaultConfig, ctx),
+    ]);
+
+    expect(first.data).toMatchObject({ ok: true, messageId: 101 });
+    expect(second.data).toMatchObject({ ok: true, messageId: 101, deduplicated: true });
+    expect(telegramApi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects reuse of an idempotency key for different content", async () => {
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    const idempotencyKey = `uaudit:${"b".repeat(64)}:en`;
+
+    await runSendToTelegram(
+      { markdownContent: "# First", idempotencyKey },
+      defaultConfig,
+      ctx,
+    );
+    const conflict = await runSendToTelegram(
+      { markdownContent: "# Changed", idempotencyKey },
+      defaultConfig,
+      ctx,
+    );
+
+    expect(conflict.data).toMatchObject({
+      ok: false,
+      code: "idempotency_conflict",
+      idempotencyKey,
+    });
+    expect(telegramApi.sendDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resend after an uncertain completed-state write", async () => {
+    let setCalls = 0;
+    const ctx = createContext(async () => ({ ok: true }) as Response);
+    vi.mocked(ctx.state.set).mockImplementation(async (key, value) => {
+      setCalls += 1;
+      if (setCalls === 2) throw new Error("state completion write failed");
+      stateStore[stateKey(key)] = value;
+    });
+    const params = {
+      text: "UAudit result",
+      idempotencyKey: `uaudit:${"c".repeat(64)}:status`,
+    };
+
+    await expect(runSendToTelegram(params, defaultConfig, ctx)).rejects.toThrow(
+      "state completion write failed",
+    );
+    const retry = await runSendToTelegram(params, defaultConfig, ctx);
+
+    expect(retry.data).toMatchObject({
+      ok: false,
+      code: "delivery_outcome_unknown",
+      idempotencyKey: params.idempotencyKey,
+      deduplicated: true,
+    });
+    expect(telegramApi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["", "contains spaces", "x".repeat(161), 42])(
+    "rejects invalid idempotency keys: %s",
+    async (idempotencyKey) => {
+      const ctx = createContext(async () => ({ ok: true }) as Response);
+      const result = await runSendToTelegram(
+        { text: "hello", idempotencyKey },
+        defaultConfig,
+        ctx,
+      );
+
+      expect(result.data).toMatchObject({ ok: false, code: "invalid_idempotency_key" });
+      expectNoTelegramCalls();
+    },
+  );
+
   it("routes markdown documents by explicit projectKey without requiring the explicit-chat allowlist", async () => {
     const ctx = createContext(async () => ({ ok: true }) as Response);
     const result = await runSendToTelegram(
